@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Breezedude Groundstation</title>
+  <link rel="stylesheet" href="style.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+  <script src="app.js"></script>
+
+  <!-- Top Bar with Title and WS Status -->
+  <div style="display: flex; justify-content: space-between; align-items: center;">
+    <div>
+      <!-- Main Title -->
+      <h1>Breezedude Groundstation</h1>
+      <h2 id="stationName">Loading...</h2>
+    </div>
+    <div style="text-align: right; padding: 10px;">
+      <div id="wsStatus" style="font-size: 0.9em; color: green;">Connecting...</div>
+      <div id="wsError" style="font-size: 0.8em; color: red;"></div>
+      <div id="msg" style="font-size: 0.8em; color: rgb(0, 0, 0);"></div>
+    </div>
+  </div>
+
+
+<!-- WiFi Section -->
+<div class="section">
+  <div class="section-header" onclick="toggleSection(this)">WiFi</div>
+  <div class="section-content">
+    <label>Connect to SSID:</label>
+    <input type="text" id="sta_ssid" name="sta_ssid" placeholder="STA SSID">
+    <label>Password:</label>
+    <input type="text" id="sta_password" name="sta_password" placeholder="Password">
+
+    <hr>
+
+    <label>AP SSID:</label>
+    <input type="text" id="ap_ssid" name="ap_ssid" placeholder="Access Point SSID">
+    <label>AP Password:</label>
+    <input type="text" id="ap_password" name="ap_password" placeholder="Access Point Password">
+
+    <label class="checkbox-label">
+      <input type="checkbox" id="keepAP" name="keepAP"> Keep AP running
+    </label>
+
+    <button onclick="saveWiFi()">Save WiFi Settings</button>
+  </div>
+</div>
+
+<!-- Settings Section -->
+<div class="section">
+  <div class="section-header" onclick="toggleSection(this)">Settings</div>
+  <div class="section-content">
+    <label>Device Name:</label>
+    <input type="text" id="deviceName" name="deviceName" placeholder="Name">
+    <small id="deviceNameError" style="color:red; display:none;">Invalid device name. Length 3-9 characters, chars and numbers only (A-Z, a-z and 0-9)<br></small>
+
+    <label>Longitude:</label>
+    <input type="number" step="any" id="lon" name="lon" placeholder="Longitude">
+
+    <label>Latitude:</label>
+    <input type="number" step="any" id="lat" name="lat" placeholder="Latitude">
+    <!-- <button id="getLocationBtn">Get current Location</button> <span id="location_set"></span> <br><br> -->
+
+    <label>Elevation:</label>
+    <input type="number" step="any" id="elevation" name="elevation" placeholder="Elevation (MSL)">
+
+    <label>APRS Server:</label>
+    <input type="text" id="aprsServer" name="aprsServer" placeholder="APRS Server. Leave empty to disable">
+
+    <label>APRS Port:</label>
+    <input type="number" id="aprsPort" name="aprsPort" placeholder="APRS Port">
+
+    <label class="checkbox-label">
+      <input type="checkbox" id="sendBreezedude" name="sendBreezedude"> Send FANET data to Breezedude
+    </label>
+
+    <button id="saveSettingsBtn" onclick="saveSettings()">Save Settings</button>
+  </div>
+</div>
+
+<!-- Info Section -->
+<div class="section">
+  <div class="section-header" onclick="toggleSection(this)">Info</div>
+  <div class="section-content">
+    <p>Version: <span id="version">-</span></p>
+    <p>Compile Time: <span id="compileTime">-</span></p>
+    <p>Uptime: <span id="uptime">-</span></p>
+    <p>Free Heap: <span id="freeHeap">-</span></p>
+    <p>WiFi Status: <span id="sta_status">-</span></p>
+    <p>WiFi IP: <span id="sta_ip">-</span></p>
+    <p>WiFi RSSI: <span id="sta_rssi">-</span></p>
+    <p>APRS Status: <span id="aprs_status">-</span></p>
+    <p>FANET Packets: <span id="fanet_rx">-</span></p>
+  </div>
+</div>
+
+  <!-- FANET Section -->
+  <div class="section">
+    <div class="section-header" onclick="toggleSection(this)">FANET</div>
+    <div class="section-content">
+
+
+      <h3>Weather Stations</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Name</th><th>Dist</th>
+            <th>Temp</th><th>Wind Dir</th><th>Wind Spd</th><th>Gust</th>
+            <th>Hum. %</th><th>Baro</th><th>SoC</th><th>RSSI</th><th>Last Seen</th>
+          </tr>
+        </thead>
+        <tbody id="weatherTable">
+        </tbody>
+      </table>
+
+      <h3>Live Tracking</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Name</th><th>Type</th><th>State</th>
+            <th>Dist</th><th>Alt</th><th>Speed</th><th>Climb</th><th>Heading</th>
+            <th>RSSI</th><th>Last Seen</th>
+          </tr>
+        </thead>
+        <tbody id="trackingTable">
+        </tbody>
+      </table>
+
+
+    </div>
+  </div>
+
+  <!-- Tools Section -->
+<div class="section">
+  <div class="section-header" onclick="toggleSection(this)">Tools</div>
+  <div class="section-content">
+    <button id="reboot" onclick="sendReboot()">Reboot</button> <br>
+    <hr>
+
+    <label>Update:</label>
+
+    <input type="file" id="fwfile">
+    <button onclick="uploadFirmware()">Update</button> <br>
+    <div id="otaStatus" style="font-size: 0.8em; color: rgb(0, 0, 0);"></div>
+    
+  </div>
+</div>
+
+
+  <p id="status"></p>
+
+</body>
+</html>

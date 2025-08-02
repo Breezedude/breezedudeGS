@@ -1,0 +1,3 @@
+#define DEFAULT_STA_SSID ""
+#define DEFAULT_STA_PASSWD ""
+#define DEFAULT_APRS_SERVER ""
