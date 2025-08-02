@@ -61,8 +61,9 @@ It is required to upload the SPIFFS/LittleFS image as well. For this click `Uplo
 If you want to skip rebundeling HTML+JS comment `pre:minify.py` in extra scripts with a semicolon
 
 ### Using Web Update
-- Upload `firmware.bin` from `.pio\build\heltec_wifi_lora_32_V3\firmware.bin`
-- Upload `.pio\build\heltec_wifi_lora_32_V3\littlefs.bin`
+the script `post:copy_firmware.py` wil runn automatically on build and generate and copy the files for web-update to the project root
+- In WebUI -> Tools select & upload `firmware_update.bin`
+- In WebUI -> Tools select & upload `littlefs.bin`
 This should work most of the time. If some changes break the updater, an upload with PIO is required.
 
 -----
