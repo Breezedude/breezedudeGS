@@ -2,22 +2,35 @@
  #include <Arduino.h>
  #include "config.h"
 
- typedef struct {
-  String wifi_ssid = DEFAULT_STA_SSID;
-  String wifi_password = DEFAULT_STA_PASSWD;
+struct Settings {
+  char wifi_ssid[64];
+  char wifi_password[64];
+  char ap_ssid[64];
+  char ap_password[64];
+  int aprsPort;
+  char aprsServer[64];
+  int elevation;
+  float longitude;
+  float latitude;
+  char deviceName[12];
+  bool keepAP;
+  bool sendBreezedude;
 
-  String ap_ssid = "BD-Groundstation";
-  String ap_password = "configureme";
-
-  int aprsPort = 14580;
-  String aprsServer = DEFAULT_APRS_SERVER;
-  int elevation = 465;
-  float longitude = 12;
-  float latitude = 47;
-  String deviceName = "MyBDGS";
-  bool keepAP =true;
-  bool sendBreezedude = true;
-} Settings;
+  Settings() {
+   strncpy(wifi_ssid, DEFAULT_STA_SSID, sizeof(wifi_ssid));
+   strncpy(wifi_password, DEFAULT_STA_PASSWD, sizeof(wifi_password));
+   strncpy(ap_ssid, "BD-Groundstation", sizeof(ap_ssid));
+   strncpy(ap_password, "configureme", sizeof(ap_password));
+   aprsPort = 14580;
+   strncpy(aprsServer, DEFAULT_APRS_SERVER, sizeof(aprsServer));
+   elevation = 400;
+   longitude = 12.0f;
+   latitude = 47.0f;
+   strncpy(deviceName, "MyGS", sizeof(deviceName));
+   keepAP = true;
+   sendBreezedude = true;
+ }
+};
 
 
 template <typename Derived>

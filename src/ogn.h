@@ -41,7 +41,7 @@ public:
   void sendTrackingData(trackingData *td);
   void sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt,String devId,uint8_t state,uint8_t adressType,float snr);
   void sendNameData(String devId,String name,float snr);
-  void sendWeatherData(weatherData *wData);
+  bool sendWeatherData(weatherData *wData);
   void setClient(Client *_client);
   void setBattVoltage(float battVoltage);
   void setStatusData(float pressure, float temp,float hum, float battVoltage,uint8_t battPercent);

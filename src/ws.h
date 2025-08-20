@@ -207,39 +207,70 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     }
 
     else if (strcmp(cmd, "save_wifi") == 0) {
-        Serial.println(json);
-        if(doc["sta_ssid"].as<String>() != settings.wifi_ssid){
-            forceReconnectSTA = true;
-            client->text("{\"msg\":\"Connecting to WiFi...\"}");
-        }
-        if((settings.ap_ssid != doc["ap_ssid"].as<String>()) || (settings.ap_password = doc["ap_password"].as<String>())){
-            restartAP = true;
-            client->text("{\"msg\":\"Restarting AP...\"}");
-        }
+    Serial.println(json);
 
-        settings.wifi_ssid = doc["sta_ssid"].as<String>();
-        settings.wifi_password = doc["sta_password"].as<String>();
-        settings.ap_ssid = doc["ap_ssid"].as<String>();
-        settings.ap_password = doc["ap_password"].as<String>();
-        settings.keepAP = doc["keepAP"].as<bool>();
-        save_preferences();
-        
+    const char* new_sta_ssid  = doc["sta_ssid"]  | "";
+    const char* new_sta_pass  = doc["sta_password"] | "";
+    const char* new_ap_ssid   = doc["ap_ssid"]   | "";
+    const char* new_ap_pass   = doc["ap_password"] | "";
+    bool new_keepAP           = doc["keepAP"]    | false;
+
+    // Check if STA SSID changed
+    if (strcmp(settings.wifi_ssid, new_sta_ssid) != 0) {
+        forceReconnectSTA = true;
+        client->text("{\"msg\":\"Connecting to WiFi...\"}");
     }
 
-    else if (strcmp(cmd, "save_settings") == 0) {
-        Serial.println(json);
-
-        settings.deviceName = doc["name"].as<String>();
-        settings.longitude = doc["lon"].as<float>();
-        settings.latitude = doc["lat"].as<float>();
-        settings.elevation = doc["elevation"].as<int>();
-        settings.aprsServer = doc["aprsServer"].as<String>();
-        settings.aprsPort = doc["aprsPort"].as<int>();
-        settings.sendBreezedude = doc["sendBreezedude"].as<bool>();
-        save_preferences();
-        client->text("{\"msg\":\"Settings saved\"}");
-        update_ogn_settings();
+    // Check if AP SSID or password changed
+    if (strcmp(settings.ap_ssid, new_ap_ssid) != 0 ||
+        strcmp(settings.ap_password, new_ap_pass) != 0) {
+        restartAP = true;
+        client->text("{\"msg\":\"Restarting AP...\"}");
     }
+
+    // Assign values safely
+    strncpy(settings.wifi_ssid, new_sta_ssid, sizeof(settings.wifi_ssid));
+    settings.wifi_ssid[sizeof(settings.wifi_ssid)-1] = '\0';
+
+    strncpy(settings.wifi_password, new_sta_pass, sizeof(settings.wifi_password));
+    settings.wifi_password[sizeof(settings.wifi_password)-1] = '\0';
+
+    strncpy(settings.ap_ssid, new_ap_ssid, sizeof(settings.ap_ssid));
+    settings.ap_ssid[sizeof(settings.ap_ssid)-1] = '\0';
+
+    strncpy(settings.ap_password, new_ap_pass, sizeof(settings.ap_password));
+    settings.ap_password[sizeof(settings.ap_password)-1] = '\0';
+
+    settings.keepAP = new_keepAP;
+
+    Serial.println("ok");
+    save_preferences();
+}
+
+else if (strcmp(cmd, "save_settings") == 0) {
+    Serial.println(json);
+
+    const char* new_deviceName = doc["name"]       | "";
+    const char* new_aprsServer = doc["aprsServer"] | "";
+
+    // Assign strings safely
+    strncpy(settings.deviceName, new_deviceName, sizeof(settings.deviceName));
+    settings.deviceName[sizeof(settings.deviceName)-1] = '\0';
+
+    strncpy(settings.aprsServer, new_aprsServer, sizeof(settings.aprsServer));
+    settings.aprsServer[sizeof(settings.aprsServer)-1] = '\0';
+
+    // Assign primitive types
+    settings.longitude     = doc["lon"]          | 0.0f;
+    settings.latitude      = doc["lat"]          | 0.0f;
+    settings.elevation     = doc["elevation"]    | 0;
+    settings.aprsPort      = doc["aprsPort"]     | 0;
+    settings.sendBreezedude= doc["sendBreezedude"] | false;
+
+    save_preferences();
+    client->text("{\"msg\":\"Settings saved\"}");
+    update_ogn_settings();
+}
 
     else if (strcmp(cmd, "reboot") == 0) {
         

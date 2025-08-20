@@ -142,7 +142,11 @@ void handle_fanet(){
           send_wd_to_breezedude(&weatherStore[i]);
         }
         if(ogn.connected()){
-          ogn.sendWeatherData(&wd);
+          if(!ogn.sendWeatherData(&wd)){
+            Serial.println(F("APRS submit weather failed"));
+          }
+        } else {
+          Serial.println(F("APRS not connected"));
         }
       }
     }
@@ -298,6 +302,10 @@ void run_wifi() {
             forceReconnectSTA = false;
             Serial.println("Attempting WiFi connection to SSID: " + String(settings.wifi_ssid));
             WiFi.begin(settings.wifi_ssid, settings.wifi_password);
+            //WiFi.persistent(false);
+            //WiFi.setAutoConnect(false);
+            //WiFi.setAutoReconnect(false);
+            //WiFi.setTxPower(WIFI_POWER_17dBm);
         }
     } else {
         if (!wifiConnected) {
@@ -319,22 +327,35 @@ if(!server_started){
 }
 
 void load_preferences(){
-  preferences.getBytes("Settings", &settings, sizeof(settings));
+  preferences.begin("gs_config", true);
+  if (preferences.isKey("Settings")) {
+    size_t loaded = preferences.getBytes("Settings", &settings, sizeof(settings));
+  }
+  preferences.end();
 }
 
 void save_preferences(){
-  preferences.putBytes("Settings", &settings, sizeof(settings));
+  preferences.begin("gs_config", false);
+  size_t loaded = preferences.putBytes("Settings", &settings, sizeof(settings));
+  preferences.end();
 }
 
 void setup() {
+    pinMode(PIN_USERBTN,INPUT_PULLUP);
     Serial.begin(115200);
     if (!LittleFS.begin()) {
         Serial.println("LittleFS Mount Failed");
         return;
     }
 
-    preferences.begin("gs_config", false);
-    load_preferences();
+    Serial.println("Press User button for reset");
+    delay(1000);
+    if(digitalRead(PIN_USERBTN) == LOW){
+      save_preferences(); // write default settings
+      Serial.println("Reset to default settings");
+    } else {
+      load_preferences();
+    }
 
     // init buffers
     for (int i = 0; i < MAX_DEVICES; i++) {

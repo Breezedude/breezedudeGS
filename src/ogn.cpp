@@ -237,9 +237,9 @@ void Ogn::sendNameData(String devId,String name,float snr){
 
 }
 
-void Ogn::sendWeatherData(weatherData *wData){
+bool Ogn::sendWeatherData(weatherData *wData){
 
-    if (initOk < INIT_FULL) return; //nothing todo
+    if (initOk < INIT_FULL) return false; //nothing todo
     float lLat = abs(wData->lat);
     float lLon = abs(wData->lon);
     int latDeg = int(lLat);
@@ -253,7 +253,7 @@ void Ogn::sendWeatherData(weatherData *wData){
         mHum = 1;
     }
     String sTime = getTimeStringFromTimestamp(wData->timestamp);
-    if (sTime.length() <= 0) return;
+    if (sTime.length() <= 0) return false;
     char buff[200];
     String send = "";
     sprintf (buff,"FNT%s>OGNFNT,qAS,%s:/%sh%02d%02d.%02d%c/%03d%02d.%02d%c_%03d/%03dg%03d"
@@ -291,12 +291,12 @@ void Ogn::sendWeatherData(weatherData *wData){
 
     
    
-    client->print(send.c_str()); 
+    size_t res = client->print(send.c_str()); 
     client->flush();
                
     
     log_i("%s",send.c_str());
-
+    return res > 0;
 }
 
 void Ogn::sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt,String devId,uint8_t state,uint8_t adressType,float snr){
