@@ -55,16 +55,25 @@ PIO will setup everything required.
 
 ## Uploading
 
+### Using WebFlasher (recommended)
+Visit [Breezedude Web Installer](https://install.breezedude.de/), connect your Heltec Wirless Stick V3 and write the firmware.
+Continue with Configuration. Check Console/Log if its not working out of the box.
+
 ### Using VSCode & PIO
-Just click `Upload`.
+Clone/Download this repo and open it in VSCode with PlatformIO installed
+click `Upload`.
 It is required to upload the SPIFFS/LittleFS image as well. For this click `Upload Filesystem Image` under `Platform` in PIO Poject Tasks.   
 If you want to skip rebundeling HTML+JS comment `pre:minify.py` in extra scripts with a semicolon
 
-### Using Web Update
+## Updating
+### Using Web Update (recommended)
 the script `post:copy_firmware.py` wil runn automatically on build and generate and copy the files for web-update to the project root
 - In WebUI -> Tools select & upload `firmware_update.bin`
 - In WebUI -> Tools select & upload `littlefs.bin`
 This should work most of the time. If some changes break the updater, an upload with PIO is required.
+
+### Using Fresh install
+You can write a fresh firmware image for updating. Either using the WebFlasher or Building & Uploading with PIO. This is required if the integrated web updater fails updating.
 
 -----
 
