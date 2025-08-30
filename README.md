@@ -38,13 +38,9 @@ Multicore is not explicitly required. The project uses **[RadioLib](https://gith
 
 If you miss some features let me know.
 
-# Setup
-Requirements: 
-- VSCode with PIO installed
-- NodeJs (for minifying HTML, optional)
-
-PIO will setup everything required. 
-`pre:install_deps.py` will run `npm i` in `/bundle` for minifying HTML+JS
+## Installing Using WebFlasher (recommended)
+Visit [Breezedude Web Installer](https://install.breezedude.de/), connect your Heltec Wirless Stick V3 and write the firmware.
+Continue with Configuration. Check Console/Log if its not working out of the box.
 
 ## Configuration
 - (optional) edit `src/config.h` to set your default values.
@@ -53,27 +49,33 @@ PIO will setup everything required.
 - Set up your values for WiFi, name and position
 - If everything is set up correctly, enable sending data to OGN by filling `aprs.glidernet.org` in APRS Server. Port is 14580
 
-## Uploading
-
-### Using WebFlasher (recommended)
-Visit [Breezedude Web Installer](https://install.breezedude.de/), connect your Heltec Wirless Stick V3 and write the firmware.
-Continue with Configuration. Check Console/Log if its not working out of the box.
-
-### Using VSCode & PIO
-Clone/Download this repo and open it in VSCode with PlatformIO installed
-click `Upload`.
-It is required to upload the SPIFFS/LittleFS image as well. For this click `Upload Filesystem Image` under `Platform` in PIO Poject Tasks.   
-If you want to skip rebundeling HTML+JS comment `pre:minify.py` in extra scripts with a semicolon
-
 ## Updating
 ### Using Web Update (recommended)
-the script `post:copy_firmware.py` wil runn automatically on build and generate and copy the files for web-update to the project root
-- In WebUI -> Tools select & upload `firmware_update.bin`
-- In WebUI -> Tools select & upload `littlefs.bin`
+Get the current version from [releases](https://github.com/thezenox/breezedudeGS/releases)
+Open configuration page of breezedude groundstation
+- In Tools select 'Update' and upload `firmware_update.bin`
+- In Tools select 'Update' and upload `littlefs.bin`
 This should work most of the time. If some changes break the updater, an upload with PIO is required.
 
 ### Using Fresh install
 You can write a fresh firmware image for updating. Either using the WebFlasher or Building & Uploading with PIO. This is required if the integrated web updater fails updating.
+
+## Compiling Using VSCode & PIO
+
+Requirements: 
+- VSCode with PIO installed
+- NodeJs (for minifying HTML, optional)
+
+Clone/Download this repo and open it in VSCode with PlatformIO installed
+PIO will setup everything required. 
+`pre:install_deps.py` will run `npm i` in `/bundle` for minifying HTML+JS
+
+In PIO Project Tasks open `heltec_wifi_lora_32_V3` -> `General` and click `Upload`.
+It is required to upload the SPIFFS/LittleFS image as well. For this click `Upload Filesystem Image` under `Platform` in PIO Poject Tasks.   
+If you want to skip rebundeling HTML+JS comment `pre:minify.py` in extra scripts with a semicolon
+
+The script `post:copy_firmware.py` wil run automatically on build and generate and copy the files for web-update to the project root.    
+The script `post:generate_webbin.py` wil run automatically on build and generate and copy the all-in-one.bin for webflashing to the project root.
 
 -----
 
