@@ -49,6 +49,8 @@ Continue with Configuration. Check Console/Log if its not working out of the box
 - Set up your values for WiFi, name and position
 - If everything is set up correctly, enable sending data to OGN by filling `aprs.glidernet.org` in APRS Server. Port is 14580
 
+If something went wrong, you can reset to factory config by pressing and holding user button *shortly after* pressing Reset button. If pressing user button while pressing reset button you will enter esp download mode.
+
 ## Updating
 ### Using Web Update (recommended)
 Get the current version from [releases](https://github.com/thezenox/breezedudeGS/releases)
