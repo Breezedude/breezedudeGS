@@ -14,7 +14,7 @@
     <div>
       <!-- Main Title -->
       <h1>Breezedude Groundstation</h1>
-      <h2 id="stationName">Loading...</h2>
+      <h2 id="deviceNamedisplay">Loading...</h2>
     </div>
     <div style="text-align: right; padding: 10px;">
       <div id="wsStatus" style="font-size: 0.9em; color: green;">Connecting...</div>
@@ -27,18 +27,20 @@
 <!-- WiFi Section -->
 <div class="section">
   <div class="section-header" onclick="toggleSection(this)">WiFi</div>
-  <div class="section-content">
+  <div id="div_wifi" class="section-content">
     <label>Connect to SSID:</label>
-    <input type="text" id="sta_ssid" name="sta_ssid" placeholder="STA SSID">
+    <input type="text" id="sta_ssid" name="sta_ssid" placeholder="STA SSID" oninput="validateMaxLength(this)">
+    <small id="sta_ssid_error" style="color:red; display:none;">Max. length is 64 characters<br></small>
     <label>Password:</label>
-    <input type="text" id="sta_password" name="sta_password" placeholder="Password">
-
+    <input type="text" id="sta_password" name="sta_password" placeholder="Password" oninput="validateMaxLength(this)">
+    <small id="sta_password_error" style="color:red; display:none;">Max. length is 64 characters<br></small>
     <hr>
-
     <label>AP SSID:</label>
-    <input type="text" id="ap_ssid" name="ap_ssid" placeholder="Access Point SSID">
+    <input type="text" id="ap_ssid" name="ap_ssid" placeholder="Access Point SSID" oninput="validateMaxLength(this)">
+    <small id="ap_ssid_error" style="color:red; display:none;">Max. length is 64 characters<br></small>
     <label>AP Password:</label>
-    <input type="text" id="ap_password" name="ap_password" placeholder="Access Point Password">
+    <input type="text" id="ap_password" name="ap_password" placeholder="Access Point Password" oninput="validateMaxLength(this)">
+    <small id="ap_password_error" style="color:red; display:none;">Max. length is 64 characters<br></small>
 
     <label class="checkbox-label">
       <input type="checkbox" id="keepAP" name="keepAP"> Keep AP running
@@ -51,7 +53,7 @@
 <!-- Settings Section -->
 <div class="section">
   <div class="section-header" onclick="toggleSection(this)">Settings</div>
-  <div class="section-content">
+  <div id="div_settings" class="section-content">
     <label>Device Name:</label>
     <input type="text" id="deviceName" name="deviceName" placeholder="Name">
     <small id="deviceNameError" style="color:red; display:none;">Invalid device name. Length 3-9 characters, chars and numbers only (A-Z, a-z and 0-9)<br></small>
@@ -66,14 +68,20 @@
     <label>Elevation:</label>
     <input type="number" step="any" id="elevation" name="elevation" placeholder="Elevation (MSL)">
 
-    <label>APRS Server:</label>
-    <input type="text" id="aprsServer" name="aprsServer" placeholder="APRS Server. Leave empty to disable">
+    <label class="checkbox-label">
+      <input type="checkbox" id="sendAPRS" name="sendAPRS" onchange="toggleAPRSInputs()"> Send data to APRS server (e.g. OGN)
+    </label>
 
-    <label>APRS Port:</label>
-    <input type="number" id="aprsPort" name="aprsPort" placeholder="APRS Port">
+    <div id="aprsInputs" style="margin-left: 20px;">
+      <label>APRS Server:</label>
+      <input type="text" id="aprsServer" name="aprsServer" placeholder="APRS Server">
+
+      <label>APRS Port:</label>
+      <input type="number" id="aprsPort" name="aprsPort" placeholder="APRS Port">
+    </div>
 
     <label class="checkbox-label">
-      <input type="checkbox" id="sendBreezedude" name="sendBreezedude"> Send FANET data to Breezedude
+      <input type="checkbox" id="sendBreezedude" name="sendBreezedude"> <div class="tooltip">Send FANET data to Breezedude <span class="tooltiptext">This is required for detailed information such as battery charge</span></div>
     </label>
 
     <button id="saveSettingsBtn" onclick="saveSettings()">Save Settings</button>
@@ -139,17 +147,18 @@
     <button id="reboot" onclick="sendReboot()">Reboot</button> <br>
     <hr>
 
-    <label>Update:</label>
-
-    <input type="file" id="fwfile">
-    <button onclick="uploadFirmware()">Update</button> <br>
+    <input type="file" id="fwfile" style="display:none"  accept=".bin"  onchange="uploadFirmware()">
+    <button onclick="document.getElementById('fwfile').click()">Software Update</button> <br>
     <div id="otaStatus" style="font-size: 0.8em; color: rgb(0, 0, 0);"></div>
+    <hr>
+    <button onclick="downloadUserData()">Export Config</button><br>
+    <input id='restore_config' type="file" accept="application/json" style="display:none" onchange="importUserData(event)">
+    <button id='import_config' onclick="document.getElementById('restore_config').click()">Import Config</button>
+    <button id="btn_save_all" style="display:none" onclick="save_all()">Save</button>
+    <span id="import_status"></span>
     
   </div>
 </div>
-
-
   <p id="status"></p>
-
 </body>
 </html>

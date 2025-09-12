@@ -14,7 +14,7 @@
 #include "helper.h"
 #include "types.h"
 #include "ws.h"
-#include "ogn.h"
+#include "aprs.h"
 
 #define SPIFFS LittleFS
 
@@ -38,9 +38,10 @@
 #define PIN_LORA_BUSY 13  // 
 #define LORA_SYNCWORD 0xF1 //SX1262: 0xF4 0x14 https://blog.classycode.com/lora-sync-word-compatibility-between-sx127x-and-sx126x-460324d1787a is handled by RadioLib
 
+#define PIN_LED 35
 #define PIN_USERBTN 0
 
-String fw_version = "0.1";
+String fw_version = "0.2";
 
 SX1262 radio_sx1262 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_BUSY);
 PhysicalLayer* radio_phy = nullptr;
@@ -60,7 +61,7 @@ Preferences preferences;
 
 Settings settings;
 
-Ogn ogn;
+Aprs aprs;
 uint32_t fanet_rx_count =0;
 
 DNSServer dnsServer;
@@ -141,8 +142,8 @@ void handle_fanet(){
         if(wifiConnected && settings.sendBreezedude){
           send_wd_to_breezedude(&weatherStore[i]);
         }
-        if(ogn.connected()){
-          if(!ogn.sendWeatherData(&wd)){
+        if(settings.sendAPRS && aprs.connected()){
+          if(!aprs.sendWeatherData(&wd)){
             Serial.println(F("APRS submit weather failed"));
           }
         } else {
@@ -156,8 +157,8 @@ void handle_fanet(){
       memset(name,'\0', numBytes-3);
       memcpy(name, &byteArr[4], numBytes-4);
       setDeviceName(header->vendor, header->address, name);
-      if(ogn.connected()){
-        ogn.sendNameData(FANET2String(header->vendor, header->address),name,radio_phy->getSNR());
+      if(settings.sendAPRS && aprs.connected()){
+        aprs.sendNameData(FANET2String(header->vendor, header->address),name,radio_phy->getSNR());
       }
     }
     else if(header->type == FANET_PCK_TYPE_TRACKING){
@@ -167,8 +168,8 @@ void handle_fanet(){
       if (millis() - trackingStore[i].last_send > 800){ // filter forwareded duplicates
           trackingStore[i].last_send = millis();
         ws.textAll(packTracking(&trackingStore[i])); // send complete set including name
-        if(ogn.connected()){
-          ogn.sendTrackingData(&td);
+        if(aprs.connected()){
+          aprs.sendTrackingData(&td);
         }
       }
     }
@@ -342,6 +343,7 @@ void save_preferences(){
 
 void setup() {
     pinMode(PIN_USERBTN,INPUT_PULLUP);
+    pinMode(PIN_LED,OUTPUT);
     Serial.begin(115200);
     if (!LittleFS.begin()) {
         Serial.println("LittleFS Mount Failed");
@@ -351,8 +353,11 @@ void setup() {
     Serial.println("Press User button for reset");
     delay(1000);
     if(digitalRead(PIN_USERBTN) == LOW){
+      digitalWrite(PIN_LED,1);
       save_preferences(); // write default settings
       Serial.println("Reset to default settings");
+      delay(200);
+      digitalWrite(PIN_LED,0);
     } else {
       load_preferences();
     }
@@ -370,7 +375,6 @@ void setup() {
       radio_phy->setPacketReceivedAction(setFlag);
       int state = radio_phy->startReceive();
       if (state == RADIOLIB_ERR_NONE) {
-        Serial.println(F("success!"));
       } else {
         Serial.print(F("failed, code "));
         Serial.println(state);
@@ -383,7 +387,7 @@ void setup() {
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   setSyncProvider(getNtpTime);
   setSyncInterval(300);
-  update_ogn_settings();
+  update_aprs_settings();
 }
 
 void handle_dummy(){
@@ -416,5 +420,7 @@ void loop() {
 
   handle_fanet();
   //handle_dummy();
-  ogn.run(wifiConnected);
+  if(settings.sendAPRS){
+    aprs.run(wifiConnected);
+  }
 }

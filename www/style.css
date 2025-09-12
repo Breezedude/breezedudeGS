@@ -84,3 +84,24 @@ body {
       text-align: left;
       font-size: 0.7em;
     }
+
+   .tooltip .tooltiptext {
+		visibility: hidden;
+		width: 300px;
+		background-color: rgba(247, 247, 247, 0.925);
+		color: #000000;
+		text-align: center;
+		border-radius: 6px;
+		padding: 5px;
+
+		/* Position the tooltip */
+		position: absolute;
+		z-index: 10000;
+		}
+
+		.tooltip:hover .tooltiptext {
+		visibility: visible;
+		}
+		fieldset{
+			width: 500px;
+		}

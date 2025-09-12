@@ -1,5 +1,5 @@
-#ifndef __OGN_H__
-#define __OGN_H__
+#ifndef __APRS_H__
+#define __APRS_H__
 
 #include <Arduino.h>
 #include <string.h>
@@ -8,9 +8,9 @@
 #include "types.h"
 #include <TimeLib.h>
 
-#define OGNSTATUSINTERVALL 300000ul
+#define APRSSTATUSINTERVALL 300000ul
 
-class Ogn {
+class Aprs {
 public:
   enum aircraft_t : uint8_t
   {
@@ -32,7 +32,7 @@ public:
     STATIC_OBJECT = 15
   };
 
-  Ogn(); //constructor
+  Aprs(); //constructor
   bool begin(String user,String version);
   void end(void);
   void run(bool bNetworkOk); //has to be called cyclic
@@ -67,6 +67,7 @@ private:
     uint8_t getFANETAircraftType(aircraft_t aircraftType);
 
     char aprs_server[90] = "";
+    char aprsTag[7]= "OGNFNT";
     uint32_t aprs_port = 0; // default is 14580
     bool aprs_connected = false;
     Client *client;

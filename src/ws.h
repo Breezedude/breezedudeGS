@@ -5,7 +5,7 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include "ogn.h"
+#include "aprs.h"
 
 #define HTTPTIMEOUT 1500
 
@@ -15,15 +15,35 @@ extern bool forceReconnectSTA;
 extern bool restartAP;
 extern String fw_version;
 extern uint32_t fanet_rx_count;
-extern Ogn ogn;
+extern Aprs aprs;
 extern String breezedudeUrl;
 extern weatherData weatherStore[MAX_DEVICES];
 extern trackingData trackingStore[MAX_DEVICES];
 
-void update_ogn_settings(){
-  ogn.begin(settings.deviceName,fw_version); 
-  ogn.setAprsServer(settings.aprsServer, settings.aprsPort);
-  ogn.setGPS(settings.latitude,settings.longitude,settings.elevation,0.0,0.0);
+
+
+String getFormattedUptime(uint32_t uptimeSeconds) {
+
+  unsigned int days    = uptimeSeconds / 86400;
+  uptimeSeconds        = uptimeSeconds % 86400;
+  byte hours           = uptimeSeconds / 3600;
+  uptimeSeconds        = uptimeSeconds % 3600;
+  byte minutes         = uptimeSeconds / 60;
+  byte seconds         = uptimeSeconds % 60;
+
+  char buffer[25];
+  snprintf(buffer, sizeof(buffer), "%ud %02uh %02um %02us", days, hours, minutes, seconds);
+  return String(buffer);
+}
+
+void update_aprs_settings(){
+if(settings.sendAPRS){
+  aprs.begin(settings.deviceName,fw_version); 
+  aprs.setAprsServer(settings.aprsServer, settings.aprsPort);
+  aprs.setGPS(settings.latitude,settings.longitude,settings.elevation,0.0,0.0);
+} else {
+    aprs.end();
+}
 }
 
 String packWeather(weatherData *wt){
@@ -159,13 +179,13 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
 
     else if (strcmp(cmd, "get_info_update") == 0) {
         JsonDocument resp;
-        resp["uptime"] = (millis()) / 1000;
+        resp["uptime"] = getFormattedUptime((millis()) / 1000);
         resp["freeHeap"] = ESP.getFreeHeap();
         resp["sta_ip"] = WiFi.localIP().toString();
         resp["sta_rssi"] = WiFi.RSSI();
         resp["sta_status"] =  ((WiFi.status() == WL_CONNECTED) ? "connected" : "disconnected" );
         if(WiFi.getMode() == WIFI_AP_STA){resp["sta_status"] = resp["sta_status"].as<String>() + "+ AP";}
-        resp["aprs_status"] = (ogn.connected()) ? "connected" : "disconnected";
+        resp["aprs_status"] = (aprs.connected()) ? "connected" : "disconnected";
         resp["fanet_rx"] = fanet_rx_count;
         String output;
         serializeJson(resp, output);
@@ -175,10 +195,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     else if (strcmp(cmd, "get_settings") == 0) {
         JsonDocument resp;
         resp["deviceName"] = settings.deviceName;
-        resp["stationName"] = settings.deviceName;
         resp["lon"] = settings.longitude;
         resp["lat"] = settings.latitude;
         resp["elevation"] = settings.elevation;
+        resp["sendAPRS"] = settings.sendAPRS;
         resp["aprsServer"] = settings.aprsServer;
         resp["aprsPort"] = settings.aprsPort;
         resp["sendBreezedude"] = settings.sendBreezedude;
@@ -199,9 +219,15 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         client->text(output);
     }
     else if (strcmp(cmd, "get_fanet") == 0) {
+       time_t current_time =  time(nullptr);
+       int time = doc["min"].as<int>();
+       if (!time) time = 5;
         for (int i = 0; i < MAX_DEVICES; i++) {
-            if (weatherStore[i].timestamp != 0) {
+            if (current_time - weatherStore[i].timestamp < time*60*1000) { // if valid packet within the last x minutes
                 client->text(packWeather(&weatherStore[i]));
+            }
+            if (current_time - trackingStore[i].timestamp < time*60*1000) { // if valid packet within the last x minutes
+                client->text(packTracking(&trackingStore[i]));
             }
         }
     }
@@ -209,11 +235,11 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     else if (strcmp(cmd, "save_wifi") == 0) {
     Serial.println(json);
 
-    const char* new_sta_ssid  = doc["sta_ssid"]  | "";
-    const char* new_sta_pass  = doc["sta_password"] | "";
-    const char* new_ap_ssid   = doc["ap_ssid"]   | "";
-    const char* new_ap_pass   = doc["ap_password"] | "";
-    bool new_keepAP           = doc["keepAP"]    | false;
+    const char* new_sta_ssid  = doc["sta_ssid"];
+    const char* new_sta_pass  = doc["sta_password"];
+    const char* new_ap_ssid   = doc["ap_ssid"];
+    const char* new_ap_pass   = doc["ap_password"];
+    bool new_keepAP           = doc["keepAP"].as<bool>();;
 
     // Check if STA SSID changed
     if (strcmp(settings.wifi_ssid, new_sta_ssid) != 0) {
@@ -243,15 +269,14 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
 
     settings.keepAP = new_keepAP;
 
-    Serial.println("ok");
     save_preferences();
 }
 
 else if (strcmp(cmd, "save_settings") == 0) {
     Serial.println(json);
 
-    const char* new_deviceName = doc["name"]       | "";
-    const char* new_aprsServer = doc["aprsServer"] | "";
+    const char* new_deviceName = doc["deviceName"];
+    const char* new_aprsServer = doc["aprsServer"];
 
     // Assign strings safely
     strncpy(settings.deviceName, new_deviceName, sizeof(settings.deviceName));
@@ -261,15 +286,16 @@ else if (strcmp(cmd, "save_settings") == 0) {
     settings.aprsServer[sizeof(settings.aprsServer)-1] = '\0';
 
     // Assign primitive types
-    settings.longitude     = doc["lon"]          | 0.0f;
-    settings.latitude      = doc["lat"]          | 0.0f;
-    settings.elevation     = doc["elevation"]    | 0;
-    settings.aprsPort      = doc["aprsPort"]     | 0;
-    settings.sendBreezedude= doc["sendBreezedude"] | false;
+    settings.longitude     = doc["lon"].as<float>();
+    settings.latitude      = doc["lat"].as<float>();
+    settings.elevation     = doc["elevation"].as<int>();
+    settings.sendAPRS      = doc["sendAPRS"].as<bool>();
+    settings.aprsPort      = doc["aprsPort"].as<int>();
+    settings.sendBreezedude= doc["sendBreezedude"].as<bool>();;
 
     save_preferences();
     client->text("{\"msg\":\"Settings saved\"}");
-    update_ogn_settings();
+    update_aprs_settings();
 }
 
     else if (strcmp(cmd, "reboot") == 0) {

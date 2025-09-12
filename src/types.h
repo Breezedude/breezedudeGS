@@ -1,12 +1,13 @@
  #pragma once
  #include <Arduino.h>
- #include "config.h"
+ #include "config_template.h"
 
 struct Settings {
   char wifi_ssid[64];
   char wifi_password[64];
   char ap_ssid[64];
   char ap_password[64];
+  bool sendAPRS;
   int aprsPort;
   char aprsServer[64];
   int elevation;

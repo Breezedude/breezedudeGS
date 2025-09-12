@@ -1,15 +1,15 @@
-#include "Ogn.h"
+#include "aprs.h"
 
-Ogn::Ogn(){
+Aprs::Aprs(){
     _user = "";
     client = NULL;
 }
 
-void Ogn::setClient(Client *_client){
+void Aprs::setClient(Client *_client){
     client = _client;
 }
 
-bool Ogn::begin(String user,String version){
+bool Aprs::begin(String user,String version){
     _version = version;
     _user = user;
     aprs_connected = false;
@@ -21,7 +21,10 @@ bool Ogn::begin(String user,String version){
     return true;
 }
 
-void Ogn::end(void){
+void Aprs::end(void){
+    if(client){
+        client->stop();
+    }
 }
 
 int32_t getStringValue(String s,String begin,String end,int32_t fromIndex,String *sRet){
@@ -42,18 +45,18 @@ float deg2f(float f){
   return (f * 9/5) + 32;
 }
 
-void Ogn::setAirMode(bool _AirMode){
+void Aprs::setAirMode(bool _AirMode){
     AirMode = _AirMode;
 }
 
-void Ogn::sendLoginMsg(void){
+void Aprs::sendLoginMsg(void){
     String login ="user " + _user + " pass " + calcPass(_user) + " vers " + _version + "\r\n";
     //log_i("%s",login.c_str());
     client->print(login);
     client->flush();
 }
 
-String Ogn::calcPass(String user){
+String Aprs::calcPass(String user){
     const int length = user.length();
     uint8_t buffer[length];
     String myString = user.substring(0,10);
@@ -72,13 +75,13 @@ String Ogn::calcPass(String user){
     return String(hash);
 }
 
-void Ogn::setAprsServer(String server, uint32_t port){
+void Aprs::setAprsServer(String server, uint32_t port){
     strcpy(aprs_server, server.c_str());
     aprs_port = port;
 }
 
 
-void Ogn::connect2Server(uint32_t tAct){
+void Aprs::connect2Server(uint32_t tAct){
     static uint32_t tConnRetry = tAct;
     initOk = INIT_NONE;
     aprs_connected = false;
@@ -99,7 +102,7 @@ void Ogn::connect2Server(uint32_t tAct){
     
 }
 
-void Ogn::checkLine(String line){
+void Aprs::checkLine(String line){
     String s = "";
     int32_t pos = 0;
     //log_i("%s",line.c_str());
@@ -110,7 +113,7 @@ void Ogn::checkLine(String line){
         pos = getStringValue(line,"server ","\r\n",0,&s);
         if (pos > 0){
             tStatus = 0;
-            tRecBaecon = millis() - OGNSTATUSINTERVALL;
+            tRecBaecon = millis() - APRSSTATUSINTERVALL;
             _servername = s;
             initOk = INIT_CONNECTED;
             log_i("logged in successfully");
@@ -118,7 +121,7 @@ void Ogn::checkLine(String line){
     }
 }
 
-void Ogn::setGPS(float lat,float lon,float alt,float speed,float heading){
+void Aprs::setGPS(float lat,float lon,float alt,float speed,float heading){
     _lat = lat;
     _lon = lon;
     _alt = alt;
@@ -127,7 +130,7 @@ void Ogn::setGPS(float lat,float lon,float alt,float speed,float heading){
     GPSOK = 1;
 }
 
-/* uint8_t Ogn::getSenderDetails(bool onlinetracking,aircraft_t aircraftType,uint8_t addressType){
+/* uint8_t Aprs::getSenderDetails(bool onlinetracking,aircraft_t aircraftType,uint8_t addressType){
     uint8_t type = 0;
     type = (uint8_t)aircraftType;
     
@@ -174,7 +177,7 @@ void Ogn::setGPS(float lat,float lon,float alt,float speed,float heading){
 }
 */
 
-uint8_t Ogn::getSenderDetails(bool OnlineTracking, aircraft_t aircraftType) {
+uint8_t Aprs::getSenderDetails(bool OnlineTracking, aircraft_t aircraftType) {
     /*
       OGN 'idXX' encoding proposal:
       - Bits 0..3: Aircraft type (0-15)
@@ -200,7 +203,7 @@ uint8_t Ogn::getSenderDetails(bool OnlineTracking, aircraft_t aircraftType) {
     return value;
 }
 
-//String Ogn::getOrigin(uint8_t addressType){
+//String Aprs::getOrigin(uint8_t addressType){
 //  uint8_t adr = addressType & 0x03;
 //  if (addressType & 0x80){
 //    //it was a Fanet-MSG
@@ -224,12 +227,12 @@ uint8_t Ogn::getSenderDetails(bool OnlineTracking, aircraft_t aircraftType) {
 //  }
 //}
 
-void Ogn::sendNameData(String devId,String name,float snr){
+void Aprs::sendNameData(String devId,String name,float snr){
     if (initOk < INIT_FULL) return; //nothing todo
     String sTime = getActTimeString();
     if (sTime.length() <= 0) return;
     char buff[200];
-    sprintf (buff,"%s%s>OGNFNT,qAS,%s:>%sh Name=\"%s\" %0.1fdB\r\n","FNT",devId.c_str(),_user.c_str(),sTime.c_str(),name.c_str(),snr);
+    sprintf (buff,"%s%s>%s,qAS,%s:>%sh Name=\"%s\" %0.1fdB\r\n","FNT",devId.c_str(),_user.c_str(),aprsTag,sTime.c_str(),name.c_str(),snr);
     
     client->print(buff); 
     client->flush();   
@@ -237,7 +240,7 @@ void Ogn::sendNameData(String devId,String name,float snr){
 
 }
 
-bool Ogn::sendWeatherData(weatherData *wData){
+bool Aprs::sendWeatherData(weatherData *wData){
 
     if (initOk < INIT_FULL) return false; //nothing todo
     float lLat = abs(wData->lat);
@@ -256,8 +259,8 @@ bool Ogn::sendWeatherData(weatherData *wData){
     if (sTime.length() <= 0) return false;
     char buff[200];
     String send = "";
-    sprintf (buff,"FNT%s>OGNFNT,qAS,%s:/%sh%02d%02d.%02d%c/%03d%02d.%02d%c_%03d/%03dg%03d"
-    ,wData->devId.c_str(),_user.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(wData->lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(wData->lon < 0)?'W':'E',
+    sprintf (buff,"FNT%s>%s,qAS,%s:/%sh%02d%02d.%02d%c/%03d%02d.%02d%c_%03d/%03dg%03d"
+    ,wData->devId.c_str(),aprsTag,_user.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(wData->lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(wData->lon < 0)?'W':'E',
     int(wData->wHeading),int(kmh2mph(wData->wSpeed)),int(kmh2mph(wData->wGust)));
     send += buff;
     if (wData->bTemp){
@@ -299,7 +302,7 @@ bool Ogn::sendWeatherData(weatherData *wData){
     return res > 0;
 }
 
-void Ogn::sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt,String devId,uint8_t state,uint8_t adressType,float snr){
+void Aprs::sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt,String devId,uint8_t state,uint8_t adressType,float snr){
   //FLR110F62>OGNFNT,qAS,FNB110F62:/202017h4833.73N/01307.57Eg299/001/A=001065 !W60! id3E110F62 -02fpm FNT71
   
   if (initOk < INIT_FULL) return; //nothing todo
@@ -318,8 +321,8 @@ void Ogn::sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt,
   }else{
     altBuff[0] = 0;
   }
-  sprintf (buff,"%s%s>OGNFNT,qAS,%s:/%sh%02d%02d.%02d%c\\%03d%02d.%02d%cn%s !W%01d%01d! id%02X%s FNT%X %0.1fdB\r\n" //3F OGN-Tracker and device 15
-  ,getOrigin(adressType).c_str(),devId.c_str(),_user.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(lon < 0)?'W':'E',altBuff,int(latMin %10),int(latMin %10),getSenderDetails(true,aircraft_t::STATIC_OBJECT),devId.c_str(),state,snr);
+  sprintf (buff,"%s%s>%s,qAS,%s:/%sh%02d%02d.%02d%c\\%03d%02d.%02d%cn%s !W%01d%01d! id%02X%s FNT%X %0.1fdB\r\n" //3F OGN-Tracker and device 15
+  ,getOrigin(adressType).c_str(),devId.c_str(),aprsTag,_user.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(lon < 0)?'W':'E',altBuff,int(latMin %10),int(latMin %10),getSenderDetails(true,aircraft_t::STATIC_OBJECT),devId.c_str(),state,snr);
   
  
   client->print(buff);
@@ -329,7 +332,7 @@ void Ogn::sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt,
 
 }
 
-uint8_t Ogn::getFANETAircraftType(aircraft_t aircraftType){
+uint8_t Aprs::getFANETAircraftType(aircraft_t aircraftType){
   switch (aircraftType)
   {
   case PARA_GLIDER:
@@ -352,7 +355,7 @@ uint8_t Ogn::getFANETAircraftType(aircraft_t aircraftType){
   return 0; //unknown
 }
 
-void Ogn::sendTrackingData(trackingData *td){
+void Aprs::sendTrackingData(trackingData *td){
     if (initOk < INIT_FULL) return;
     if ((td->aircraftType < 0) || (td->aircraftType > 15)){
         Serial.printf("wrong aircraftType %d --> set to unknown\n",(int)(td->aircraftType));
@@ -369,7 +372,7 @@ void Ogn::sendTrackingData(trackingData *td){
     if (sTime.length() <= 0) return;
     int pos = 0;
     pos += snprintf(&buff[pos],255-pos,"%s",td->adressType.c_str());
-    pos += snprintf(&buff[pos],255-pos,"%s>OGNFNT,qAS,",td->devId.c_str());
+    pos += snprintf(&buff[pos],255-pos,"%s>%s,qAS,",td->devId.c_str(), aprsTag);
     pos += snprintf(&buff[pos],255-pos,"%s:/",_user.c_str());
     pos += snprintf(&buff[pos],255-pos,"%sh",sTime.c_str());
     pos += snprintf(&buff[pos],255-pos,"%02d%02d.%02d",latDeg,latMin/1000,latMin/10 %100);
@@ -391,7 +394,7 @@ void Ogn::sendTrackingData(trackingData *td){
     
 }
 
-void Ogn::setStatusData(float pressure, float temp,float hum, float battVoltage,uint8_t battPercent){
+void Aprs::setStatusData(float pressure, float temp,float hum, float battVoltage,uint8_t battPercent){
     _Pressure = pressure;
     _Temp = temp;
     _Hum = hum;
@@ -399,8 +402,8 @@ void Ogn::setStatusData(float pressure, float temp,float hum, float battVoltage,
     _BattPercent = battPercent;
 }
 
-void Ogn::sendReceiverStatus(String sTime){
-    String sStatus = _user + ">OGNFNT,TCPIP*,qAC," + _servername + ":>" + sTime + "h " + _version + " CPU:" + String(_BattPercent/100.0,1) + " ";
+void Aprs::sendReceiverStatus(String sTime){
+    String sStatus = _user + ">" + aprsTag + ",TCPIP*,qAC," + _servername + ":>" + sTime + "h " + _version + " CPU:" + String(_BattPercent/100.0,1) + " ";
     if (!isnan(_alt)){
         sStatus += String(_alt,0) + "m "; //send altitude
     }
@@ -430,7 +433,7 @@ void Ogn::sendReceiverStatus(String sTime){
     log_i("%s",sStatus.c_str());
 }
 
-void Ogn::sendReceiverBeacon(String sTime){
+void Aprs::sendReceiverBeacon(String sTime){
     char buff[200];
     float lLat = abs(_lat);
     float lLon = abs(_lon);
@@ -440,11 +443,11 @@ void Ogn::sendReceiverBeacon(String sTime){
     int lonMin = (roundf((lLon - int(lLon)) * 60 * 1000));
 
     if (AirMode){
-        sprintf (buff,"%s>OGNFNT,TCPIP*,qAC,%s:/%sh%02d%02d.%02d%cI%03d%02d.%02d%c&%03d/%03d/A=%06d !W%01d%01d!\r\n"
-                    ,_user.c_str(),_servername.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(_lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(_lon < 0)?'W':'E',int(_heading),int(_speed * 0.53996),int(_alt * 3.28084),int(latMin %10),int(latMin %10));
+        sprintf (buff,"%s>%s,TCPIP*,qAC,%s:/%sh%02d%02d.%02d%cI%03d%02d.%02d%c&%03d/%03d/A=%06d !W%01d%01d!\r\n"
+                    ,_user.c_str(),aprsTag,_servername.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(_lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(_lon < 0)?'W':'E',int(_heading),int(_speed * 0.53996),int(_alt * 3.28084),int(latMin %10),int(latMin %10));
     }else{
-        sprintf (buff,"%s>OGNFNT,TCPIP*,qAC,%s:/%sh%02d%02d.%02d%cI%03d%02d.%02d%c&/A=%06d\r\n"
-                    ,_user.c_str(),_servername.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(_lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(_lon < 0)?'W':'E',int(_alt * 3.28084));
+        sprintf (buff,"%s>%s,TCPIP*,qAC,%s:/%sh%02d%02d.%02d%cI%03d%02d.%02d%c&/A=%06d\r\n"
+                    ,_user.c_str(),aprsTag,_servername.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(_lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(_lon < 0)?'W':'E',int(_alt * 3.28084));
     }
 
     client->print(buff);
@@ -455,7 +458,7 @@ void Ogn::sendReceiverBeacon(String sTime){
     //log_i("%s",buff);
 }
 
-String Ogn::getActTimeString(time_t timestamp){
+String Aprs::getActTimeString(time_t timestamp){
   struct tm timeinfo;
   char buff[20];
   gmtime_r(&timestamp, &timeinfo);
@@ -464,7 +467,7 @@ String Ogn::getActTimeString(time_t timestamp){
   return String(buff);
 }
 
-String Ogn::getActTimeString(){
+String Aprs::getActTimeString(){
   char buff[20];
   if (timeStatus() == timeSet){
       //log_i("%d %d %d %d:%d:%d",year(),month(),day(),hour(),minute(),second());
@@ -476,17 +479,17 @@ String Ogn::getActTimeString(){
   }
 }
 
-String Ogn::getTimeStringFromTimestamp(time_t timestamp) {
+String Aprs::getTimeStringFromTimestamp(time_t timestamp) {
     struct tm *tm = localtime(&timestamp);
     char buff[7]; // 6 digits + null terminator
     sprintf(buff, "%02d%02d%02d", tm->tm_hour, tm->tm_min, tm->tm_sec);
     return String(buff);
 }
 
-void Ogn::sendStatus(uint32_t tAct){
+void Aprs::sendStatus(uint32_t tAct){
     if (initOk > INIT_NONE){        
         if (GPSOK){
-            if (((tAct - tRecBaecon) >= OGNSTATUSINTERVALL) || tRecBaecon == 0){
+            if (((tAct - tRecBaecon) >= APRSSTATUSINTERVALL) || tRecBaecon == 0){
                 tRecBaecon = tAct;
                 tStatus = tAct;
                 String sTime = getActTimeString();
@@ -508,7 +511,7 @@ void Ogn::sendStatus(uint32_t tAct){
     }
 }
 
-void Ogn::readClient(){
+void Aprs::readClient(){
   String line = "";
   if (client->available()){
     while (client->available()){
@@ -523,7 +526,7 @@ void Ogn::readClient(){
   }
 }
 
-void Ogn::checkClientConnected(uint32_t tAct){
+void Aprs::checkClientConnected(uint32_t tAct){
     static uint32_t tCheck = tAct;
     if ((tAct - tCheck) >= 5000){
         tCheck = tAct;
@@ -536,7 +539,7 @@ void Ogn::checkClientConnected(uint32_t tAct){
     }
 }
 
-void Ogn::run(bool bNetworkOk){    
+void Aprs::run(bool bNetworkOk){    
     uint32_t tAct = millis();    
     //if (WiFi.status() == WL_CONNECTED){
     if (bNetworkOk){
