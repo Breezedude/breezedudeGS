@@ -2,7 +2,8 @@
 Basic FANET OGN Groundstation based on ESP32 + SX1262
 
 ## 🚧 BETA
-> Note: This project is currently in beta and may require further testing. If you encounter any issues or unexpected behavior, please open an issue or let me know.
+> [!IMPORTANT]
+> This project is currently in beta and may require further testing. If you encounter any issues or unexpected behavior, please open an issue or let me know.
 
 ## ⁉️ Why another groundstation software?
 
@@ -58,9 +59,11 @@ If something went wrong, you can reset to factory config by pressing and holding
 ### Using Web Update (recommended)
 Get the current version from [releases](https://github.com/thezenox/breezedudeGS/releases)
 Open configuration page of breezedude groundstation
+- Backup the settings by clicking `Export Config` in Tools
 - In Tools select 'Update' and upload `firmware_update.bin`
 - In Tools select 'Update' and upload `littlefs.bin`
-This should work most of the time. If some changes break the updater, an upload with PIO is required.
+- Restore Config if its broken/reset by uploading your backup file. Don't forget to click `Save` to write the uploaded settings
+This should work most of the time. If some changes break the updater, an clean upload with WebFlasher/PIO may be required.
 
 ### Using Fresh install
 You can write a fresh firmware image for updating. Either using the WebFlasher or Building & Uploading with PIO. This is required if the integrated web updater fails updating.
@@ -78,9 +81,11 @@ Steps:
 - In PIO Project Tasks open `heltec_wifi_lora_32_V3` -> `General` and click `Upload`.
 - It is required to upload the SPIFFS/LittleFS image as well. For this click `Upload Filesystem Image` under `Platform` in PIO Poject Tasks.   
 
+> [!NOTE]
 > If you want to skip rebundeling HTML+JS comment `pre:minify.py` in extra scripts with a semicolon   
 > `pre:install_deps.py` will run `npm i` in `/bundle` for minifying HTML+JS
 
+> [!NOTE]
 > The script `post:copy_firmware.py` wil run automatically on build and generate and copy the files for web-update to the project root.    
 > The script `post:generate_webbin.py` wil run automatically on build and generate and copy the all-in-one.bin for webflashing to the project root.
 
