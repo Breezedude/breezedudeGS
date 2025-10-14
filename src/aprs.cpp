@@ -359,7 +359,7 @@ void Aprs::sendTrackingData(trackingData *td){
     if (initOk < INIT_FULL) return;
     if ((td->aircraftType < 0) || (td->aircraftType > 15)){
         Serial.printf("wrong aircraftType %d --> set to unknown\n",(int)(td->aircraftType));
-        td->aircraftType = UNKNOWN;
+        td->aircraftType = acft_Other;
     }
     char buff[255];
     float lLat = abs(td->lat);

@@ -5,8 +5,60 @@
   <title>Breezedude Groundstation</title>
   <link rel="stylesheet" href="style.css">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+   
+  </style>
 </head>
 <body>
+
+  <!-- Theme Toggle Switch -->
+  <div class="theme-toggle">
+    🌞
+    <label class="switch">
+      <input type="checkbox" id="themeSwitch">
+      <span class="slider"></span>
+    </label>
+    🌙
+  </div>
+
+  <script>
+    const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const currentTheme = localStorage.getItem("theme");
+    const body = document.body;
+    const themeSwitch = document.getElementById("themeSwitch");
+
+    // Apply stored or system theme
+    if (currentTheme === "dark") {
+      body.setAttribute("data-theme", "dark");
+      themeSwitch.checked = true;
+    } else if (currentTheme === "light") {
+      body.setAttribute("data-theme", "light");
+      themeSwitch.checked = false;
+    } else if (prefersDarkScheme.matches) {
+      body.setAttribute("data-theme", "dark");
+      themeSwitch.checked = true;
+    }
+
+    // Manual override toggle
+    themeSwitch.addEventListener("change", () => {
+      if (themeSwitch.checked) {
+        body.setAttribute("data-theme", "dark");
+        localStorage.setItem("theme", "dark");
+      } else {
+        body.setAttribute("data-theme", "light");
+        localStorage.setItem("theme", "light");
+      }
+    });
+
+    // React to system theme changes if no override set
+    prefersDarkScheme.addEventListener("change", e => {
+      if (!localStorage.getItem("theme")) {
+        body.setAttribute("data-theme", e.matches ? "dark" : "light");
+        themeSwitch.checked = e.matches;
+      }
+    });
+  </script>
+
   <script src="app.js"></script>
 
   <!-- Top Bar with Title and WS Status -->
@@ -19,10 +71,9 @@
     <div style="text-align: right; padding: 10px;">
       <div id="wsStatus" style="font-size: 0.9em; color: green;">Connecting...</div>
       <div id="wsError" style="font-size: 0.8em; color: red;"></div>
-      <div id="msg" style="font-size: 0.8em; color: rgb(0, 0, 0);"></div>
+      <div id="msg" style="font-size: 0.8em;"></div>
     </div>
   </div>
-
 
 <!-- WiFi Section -->
 <div class="section">
@@ -149,7 +200,7 @@
 
     <input type="file" id="fwfile" style="display:none"  accept=".bin"  onchange="uploadFirmware()">
     <button onclick="document.getElementById('fwfile').click()">Software Update</button> <br>
-    <div id="otaStatus" style="font-size: 0.8em; color: rgb(0, 0, 0);"></div>
+    <div id="otaStatus" style="font-size: 0.8em;"></div>
     <hr>
     <button onclick="downloadUserData()">Export Config</button><br>
     <input id='restore_config' type="file" accept="application/json" style="display:none" onchange="importUserData(event)">

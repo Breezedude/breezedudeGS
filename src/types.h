@@ -34,6 +34,39 @@ struct Settings {
 };
 
 
+
+typedef enum trck_state_ {
+    state_Other = 0,
+	state_Walking = 1,
+	state_Vehicle = 2,
+	state_Bike = 3,
+	state_Boot = 4,
+	state_Need_ride = 8,
+	state_Landed_well = 9,
+	state_Need_technical_support = 12,
+	state_Need_medical_help = 13,
+	state_Distress_call = 14,
+	state_Distress_call_automatically = 15,
+    state_Flying = 16 // if fanet packet type = 1
+  } trck_state;
+
+  
+
+const String trck_state_names [16] = {"Other","Walking","Vehicle","Bike","Boot","Need a ride","Landed well","Need technical support","Need medical help","Distress call","Distress call automatically","Flying"};
+
+typedef enum trck_acft_type_ {
+    acft_Other = 0,
+	acft_Paraglider= 1,
+	acft_Hangglider= 2,
+	acft_Balloon= 3,
+	acft_Glider= 4,
+	acft_Powered_Aircraft= 5,
+	acft_Helicopter= 6,
+	acft_UAV= 7,
+  } trck_acft_type;
+
+const String trck_acft_names[8] = {"Other","Paraglider","Hangglider","Balloon","Glider","Powered Aircraft","Helicopter","UAV"};
+
 template <typename Derived>
 struct FanetBase {
     String name;
@@ -104,12 +137,13 @@ struct weatherData : public FanetBase<weatherData> {
 struct trackingData : public FanetBase<trackingData> {
     float alt;
     uint16_t hdop;
-    int aircraftType;
+    trck_acft_type aircraftType;
     String adressType;
     float speed;
     float climb;
     float heading;
     bool onlineTracking;
+    trck_state state;
 
     void assign(const trackingData& other) {
         assignBase(other);
@@ -121,41 +155,79 @@ struct trackingData : public FanetBase<trackingData> {
         climb = other.climb;
         heading = other.heading;
         onlineTracking = other.onlineTracking;
+        state = other.state; // either groundmode_ or -1 for flying
     }
 };
 
  enum {
     FANET_PCK_TYPE_TRACKING = 0x01,
     FANET_PCK_TYPE_NAME = 0x02,
-    FANET_PCK_TYPE_WEATHER = 0x04
+    FANET_PCK_TYPE_WEATHER = 0x04,
+    FANET_PCK_TYPE_GROUND_TRACKING = 0x07
   };
 
 typedef struct {
     unsigned int type           :6;
     unsigned int forward        :1;
     unsigned int ext_header     :1;
+    
     unsigned int vendor         :8;
     unsigned int address        :16;
     }  __attribute__((packed)) fanet_header;
 
-typedef struct {
+typedef struct __attribute__((packed)) {
     fanet_header header;
-    unsigned int latitude       :24;
-    unsigned int longitude      :24;
-    /* units are degrees, seconds, and meter */
-    unsigned int altitude_lsb   :8; /* FANET+ reported alt. comes from ext. source */
-    unsigned int altitude_msb   :3; /* I assume that it is geo (GNSS) altitude */
-    unsigned int altitude_scale :1;
-    unsigned int aircraft_type  :3;
-    unsigned int track_online   :1;
-    unsigned int speed          :7;
-    unsigned int speed_scale    :1;
-    unsigned int climb          :7;
-    unsigned int climb_scale    :1;
-    unsigned int heading        :8;
-    unsigned int turn_rate      :7;
-    unsigned int turn_scale     :1;
-  } __attribute__((packed)) fanet_packet_t1;
+    // Bytes 0–2 : Latitude (24-bit signed, little endian)
+    unsigned int latitude_raw : 24;
+
+    // Bytes 3–5 : Longitude (24-bit signed, little endian)
+    unsigned int longitude_raw : 24;
+
+    // Bytes 6–7 : Type + altitude field
+    unsigned int altitude       : 11;  // bits 0–10 (meters)
+    unsigned int altitude_scale : 1;   // bit 11 (0=×1, 1=×4)
+    unsigned int aircraft_type  : 3;   // bits 12–14 (0..7)
+    unsigned int track_online   : 1;   // bit 15
+
+    // Byte 8 : Speed
+    unsigned int speed_value : 7;  // bits 0–6 (×0.5 km/h)
+    unsigned int speed_scale : 1;  // bit 7 (×5)
+    
+    // Byte 9 : Climb rate
+    unsigned int climb_value : 7;  // bits 0–6 (×0.1 m/s, 2’s complement)
+    unsigned int climb_scale : 1;  // bit 7 (×5)
+    
+
+    // Byte 10 : Heading (0–255 → 0–360°)
+    unsigned int heading : 8;
+
+    // Byte 11 : (optional) Turn rate
+    unsigned int turn_value : 7;  // bits 0–6 (×0.25°/s, 2’s complement)
+    unsigned int turn_scale : 1;  // bit 7 (×4)
+    
+    // Byte 12 : (optional) QNE offset
+    unsigned int qne_value : 7;   // bits 0–6 (meters, 2’s complement)
+    unsigned int qne_scale : 1;   // bit 7 (×4)
+    
+    
+} fanet_packet_t1;
+
+
+
+typedef struct __attribute__((packed)) {
+    fanet_header header;
+    // Bytes 0–2 : Latitude (24-bit signed, little endian)
+    unsigned int latitude_raw : 24;
+
+    // Bytes 3–5 : Longitude (24-bit signed, little endian)
+    unsigned int longitude_raw : 24;
+
+    // Bytes 6 : Type
+    unsigned int track_online   : 1;   // bit 0
+    unsigned int tbd  : 3;             // bits 3-1
+    trck_state type : 4;             // bits 7-4
+
+} fanet_packet_t7;
 
 
 typedef struct {
@@ -188,8 +260,9 @@ extern weatherData weatherStore[MAX_DEVICES];
 extern trackingData trackingStore[MAX_DEVICES];
 
 void pack_weatherdata(weatherData *wData, uint8_t * buffer);
-void unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rssi);
-void unpack_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr);
+bool unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rssi);
+bool unpack_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr);
+bool unpack_ground_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr);
 void print_fanet_packet_t4(fanet_packet_t4 *pkt);
 void print_weatherData(weatherData *wData);
 void fill_weatherData_dummy(weatherData *wData);

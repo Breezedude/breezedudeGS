@@ -89,12 +89,21 @@ String packTracking(trackingData *td) {
     t["lon"] = td->lon;
     t["alt"] = td->alt;
     t["hdop"] = td->hdop;
-    t["acft"] = td->aircraftType;
+    t["acft"] = trck_acft_names[td->aircraftType];
     t["spd"] = td->speed;
     t["climb"] = td->climb;
     t["heading"] = td->heading;
     t["track"] = td->onlineTracking;
     t["tLastMsg"] = td->timestamp;
+    t["state"] = trck_state_names[td->state];
+
+    if(td->state < 16){ // groundtracking, set speed and elevation "-"
+        t["spd"] = "-";
+        t["climb"] = "-";
+        t["alt"] =  "-";
+        t["heading"] = "-";
+        t["acft"] = "-";
+    }
 
     String output;
     serializeJson(resp, output);

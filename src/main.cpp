@@ -41,7 +41,7 @@
 #define PIN_LED 35
 #define PIN_USERBTN 0
 
-String fw_version = "0.2";
+String fw_version = "0.3";
 
 SX1262 radio_sx1262 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_BUSY);
 PhysicalLayer* radio_phy = nullptr;
@@ -133,21 +133,22 @@ void handle_fanet(){
     fanet_header *header = (fanet_header *)byteArr;
     if(header->type == FANET_PCK_TYPE_WEATHER){
       weatherData wd;
-      unpack_weatherdata(byteArr, &wd, radio_phy->getSNR(), radio_phy->getRSSI());
-      //print_weatherData(&wd);
-      int i = storeWeatherData(wd);
-      if (millis() - weatherStore[i].last_send > 3000){ // filter forwareded duplicates
-        weatherStore[i].last_send = millis()+2;
-        ws.textAll(packWeather(&weatherStore[i]));
-        if(wifiConnected && settings.sendBreezedude){
-          send_wd_to_breezedude(&weatherStore[i]);
-        }
-        if(settings.sendAPRS && aprs.connected()){
-          if(!aprs.sendWeatherData(&wd)){
-            Serial.println(F("APRS submit weather failed"));
+      if(unpack_weatherdata(byteArr, &wd, radio_phy->getSNR(), radio_phy->getRSSI())){
+        //print_weatherData(&wd);
+        int i = storeWeatherData(wd);
+        if (millis() - weatherStore[i].last_send > 3000){ // filter forwareded duplicates
+          weatherStore[i].last_send = millis()+2;
+          ws.textAll(packWeather(&weatherStore[i]));
+          if(wifiConnected && settings.sendBreezedude){
+            send_wd_to_breezedude(&weatherStore[i]);
           }
-        } else {
-          Serial.println(F("APRS not connected"));
+          if(settings.sendAPRS && aprs.connected()){
+            if(!aprs.sendWeatherData(&wd)){
+              Serial.println(F("APRS submit weather failed"));
+            }
+          } else {
+            Serial.println(F("APRS not connected"));
+          }
         }
       }
     }
@@ -163,19 +164,31 @@ void handle_fanet(){
     }
     else if(header->type == FANET_PCK_TYPE_TRACKING){
       trackingData td;
-      unpack_trackingdata(byteArr, &td, radio_phy->getSNR(), radio_phy->getRSSI());
-      int i = storeTrackingData(td); // sort and get position
-      if (millis() - trackingStore[i].last_send > 800){ // filter forwareded duplicates
-          trackingStore[i].last_send = millis();
-        ws.textAll(packTracking(&trackingStore[i])); // send complete set including name
-        if(aprs.connected()){
-          aprs.sendTrackingData(&td);
+      if(unpack_trackingdata(byteArr, &td, radio_phy->getSNR(), radio_phy->getRSSI())){
+        int i = storeTrackingData(td); // sort and get position
+        if (millis() - trackingStore[i].last_send > 800){ // filter forwareded duplicates
+            trackingStore[i].last_send = millis();
+          ws.textAll(packTracking(&trackingStore[i])); // send complete set including name
+          if(aprs.connected()){
+            aprs.sendTrackingData(&td);
+          }
+        }
+      }
+    } else if(header->type == FANET_PCK_TYPE_GROUND_TRACKING){
+      trackingData td;
+      if(unpack_ground_trackingdata(byteArr, &td, radio_phy->getSNR(), radio_phy->getRSSI())){
+        int i = storeTrackingData(td); // sort and get position
+        if (millis() - trackingStore[i].last_send > 800){ // filter forwareded duplicates
+            trackingStore[i].last_send = millis();
+          ws.textAll(packTracking(&trackingStore[i])); // send complete set including name
+        // if(aprs.connected()){
+        //   aprs.sendTrackingData(&td);
+        // }
         }
       }
     }
   }
 }
-
 
 void server_setup(){
 
@@ -383,6 +396,8 @@ void setup() {
     }  else {
         Serial.print(F("Radio not found"));
     }
+
+  WiFi.setHostname(settings.deviceName);
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   setSyncProvider(getNtpTime);

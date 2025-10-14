@@ -73,7 +73,7 @@ void pack_weatherdata(weatherData *wData, uint8_t * buffer){
   pkt->charge = constrain(roundf(float(wData->Charge) / 100.0 * 15.0),0,15); //State of Charge  (+1byte lower 4 bits: 0x00 = 0%, 0x01 = 6.666%, .. 0x0F = 100%)
 }
 
-void unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rssi){
+bool unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rssi){
     fanet_packet_t4 *pkt = (fanet_packet_t4 *)buffer;
     wData->snr = snr;
     wData->rssi = rssi;
@@ -87,9 +87,16 @@ void unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rs
     wData->bTemp = pkt->bTemp;
     wData->devId = FANET2String(wData->vid, wData->fanet_id);
     wData->timestamp = time(nullptr);
-    // Latitude / Longitude
-    wData->lat = pkt->latitude / 93206.0f;
-    wData->lon = pkt->longitude / 46603.0f;
+    // Latitude
+    int32_t lat_raw = pkt->latitude & 0xFFFFFF;  // keep only 24 bits
+    if (lat_raw & 0x800000)                            // if sign bit (bit 23) is set
+        lat_raw |= 0xFF000000;                         // sign extend to 32 bits
+    wData->lat = (float)lat_raw / 93206.0f;
+    // Longitude
+    int32_t lon_raw = pkt->longitude & 0xFFFFFF; // keep only 24 bits
+    if (lon_raw & 0x800000)
+        lon_raw |= 0xFF000000;
+    wData->lon = (float)lon_raw / 46603.0f;
     // Temperature
     if(wData->bTemp){
         int8_t iTemp = pkt->temp; // signed, as it uses 2's complement
@@ -126,9 +133,35 @@ void unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rs
     if(wData->bStateOfCharge){
         wData->Charge = (pkt->charge & 0x0F) * 100.0f / 15.0f; // recover 0-100%
     }
+    return true;
 }
 
-void unpack_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr) {
+float fns_buf2coord_compressed(uint16_t *buf, float mycoord)
+{
+	/* decode buffer */
+	bool odd = !!((1<<15) & *buf);
+	int16_t sub_deg_int = (*buf&0x7FFF) | (1<<14&*buf)<<1;
+	const float sub_deg = sub_deg_int / 32767.0f;
+
+
+	/* retrieve coordinate */
+	float mycood_rounded = roundf(mycoord);
+	bool mycoord_isodd = ((int)mycood_rounded) & 1;
+
+	/* target outside our segment. estimate where it is in */
+	if(mycoord_isodd != odd)
+	{
+		/* adjust deg segment */
+		const float mysub_deg = mycoord - mycood_rounded;
+		if(sub_deg > mysub_deg)
+			mycood_rounded--;
+		else
+			mycood_rounded++;
+	}
+	return mycood_rounded + sub_deg;
+}
+
+bool unpack_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr) {
     fanet_packet_t1 *packet = (fanet_packet_t1 *)buffer;
 
     data->vid = packet->header.vendor;
@@ -139,33 +172,90 @@ void unpack_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr)
     data->adressType = "FNT";
     data->timestamp = time(nullptr);
     // Latitude
-    int32_t lat_raw = packet->latitude;
-    if (lat_raw & 0x800000) lat_raw |= 0xFF000000; // sign extension
-    data->lat = lat_raw * 180.0 / 8388607.0;
+    int32_t lat_raw = packet->latitude_raw & 0xFFFFFF;  // keep only 24 bits
+    if (lat_raw & 0x800000)                            // if sign bit (bit 23) is set
+        lat_raw |= 0xFF000000;                         // sign extend to 32 bits
+    data->lat = (float)lat_raw / 93206.0f;
+
     // Longitude
-    int32_t lon_raw = packet->longitude;
-    if (lon_raw & 0x800000) lon_raw |= 0xFF000000; // sign extension
-    data->lon = lon_raw * 180.0 / 8388607.0;
-    // Altitude
-    uint16_t altitude_raw = (packet->altitude_msb << 8) | packet->altitude_lsb;
-    float altitude = (packet->altitude_scale ? 50.0 : 1.0) * altitude_raw;
-    data->alt = altitude;
-    // HDOP is not in the packet → set default
-    data->hdop = 0;
-    // Aircraft Type
-    data->aircraftType = packet->aircraft_type;
-    // Speed
-    float speed = packet->speed * (packet->speed_scale ? 4.0 : 1.0);
-    data->speed = speed;
-    // Climb
-    int8_t climb_raw = packet->climb;
-    if (climb_raw & 0x40) climb_raw |= 0x80; // sign extension for 7 bits
-    float climb = climb_raw * (packet->climb_scale ? 0.5 : 0.1);
-    data->climb = climb;
-    // Heading
-    data->heading = packet->heading * 360.0 / 256.0;
-    // Online Tracking
-    data->onlineTracking = packet->track_online;
+    int32_t lon_raw = packet->longitude_raw & 0xFFFFFF; // keep only 24 bits
+    if (lon_raw & 0x800000)
+        lon_raw |= 0xFF000000;
+    data->lon = (float)lon_raw / 46603.0f;
+   // Altitude
+float altitude = (float)packet->altitude * (packet->altitude_scale ? 4.0f : 1.0f);
+data->alt = altitude;
+
+// HDOP (not transmitted in FANET)
+data->hdop = 0.0f;
+
+// Aircraft Type
+data->aircraftType = (trck_acft_type) (packet->aircraft_type); 
+
+// Speed
+float speed = (float)packet->speed_value * 0.5f * (packet->speed_scale ? 5.0f : 1.0f);
+data->speed = speed;
+if(data->speed > 315){return false;}// (max 317.5km/h)
+
+// Climb
+int8_t climb_raw = packet->climb_value;
+if (climb_raw & 0x40) climb_raw |= 0x80;  // sign extend 7-bit 2’s complement
+float climb = (float)climb_raw * 0.1f * (packet->climb_scale ? 5.0f : 1.0f);
+data->climb = climb;
+
+// Heading
+data->heading = (float)packet->heading * (360.0f / 256.0f);
+
+// Online Tracking flag
+data->onlineTracking = packet->track_online;
+data->state = state_Flying;
+
+// Optional fields
+// Turn rate (if present)
+#ifdef FANET_HAS_TURN_RATE
+int8_t turn_raw = packet->turn_value;
+if (turn_raw & 0x40) turn_raw |= 0x80;
+data->turnRate = (float)turn_raw * 0.25f * (packet->turn_scale ? 4.0f : 1.0f);
+#endif
+
+// QNE offset (if present)
+#ifdef FANET_HAS_QNE
+int8_t qne_raw = packet->qne_value;
+if (qne_raw & 0x40) qne_raw |= 0x80;
+data->qneOffset = (float)qne_raw * (packet->qne_scale ? 4.0f : 1.0f);
+#endif
+return true;
+}
+
+
+bool unpack_ground_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr) {
+    fanet_packet_t7 *packet = (fanet_packet_t7 *)buffer;
+
+    data->vid = packet->header.vendor;
+    data->fanet_id = packet->header.address;
+    data->devId = FANET2String(data->vid, data->fanet_id);
+    data->rssi = rssi;
+    data->snr = snr;
+    data->adressType = "FNT";
+    data->timestamp = time(nullptr);
+    // Latitude
+    int32_t lat_raw = packet->latitude_raw & 0xFFFFFF;  // keep only 24 bits
+    if (lat_raw & 0x800000)                            // if sign bit (bit 23) is set
+        lat_raw |= 0xFF000000;                         // sign extend to 32 bits
+    data->lat = (float)lat_raw / 93206.0f;
+
+    // Longitude
+    int32_t lon_raw = packet->longitude_raw & 0xFFFFFF; // keep only 24 bits
+    if (lon_raw & 0x800000)
+        lon_raw |= 0xFF000000;
+    data->lon = (float)lon_raw / 46603.0f;
+    data->state = packet->type;
+    data->climb = 0;
+    data->heading = 0;
+    data->aircraftType = acft_Other;
+    data->speed =0;
+    data->alt =0;
+    return true;
 }
 
 

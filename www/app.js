@@ -91,7 +91,6 @@ function wsSend(obj) {
 
 // Function to create or update a table row
 function upsertRow(tableId, data, rowMap, columns) {
-  const now = Date.now();
   let row = rowMap.get(data.id);
 
   if (!row) {
@@ -104,13 +103,7 @@ function upsertRow(tableId, data, rowMap, columns) {
       cell.dataset.key = columns[i];
       row.appendChild(cell);
     }
-
-    // Add hidden cell for lastSeen timestamp
-    if(data.lastSeen){
-      row.dataset.lastSeen = data.lastSeen;
-    }
     
-
     // Append to table
     table.appendChild(row);
     rowMap.set(data.id, row);
@@ -121,7 +114,7 @@ function upsertRow(tableId, data, rowMap, columns) {
     const cell = row.querySelector(`[data-key="${key}"]`);
     if (cell) {
       if (key === "lastSeen") {
-        cell.innerText = "-";
+        row.dataset.lastSeen = parseInt(data.lastSeen || "0", 10);
       } else {
         cell.innerText = data[key] !== undefined ? data[key] : "";
       }
@@ -133,8 +126,7 @@ function upsertRow(tableId, data, rowMap, columns) {
 function removeOldRows(rowMap, maxAgeMs) {
   const now = Date.now();
   for (const [id, row] of rowMap.entries()) {
-    const lastSeen = parseInt(row.dataset.lastSeen || "0", 10);
-    if (now - lastSeen > maxAgeMs) {
+    if (now - row.dataset.lastSeen > maxAgeMs) {
       row.remove();
       rowMap.delete(id);
     }
@@ -148,8 +140,7 @@ function updateLastSeenCounters() {
     for (const [id, row] of rowMap.entries()) {
       const cell = row.querySelector('[data-key="lastSeen"]');
       if (cell) {
-        const lastSeen = parseInt(row.dataset.lastSeen || "0", 10);
-        const delta = Math.floor((now - lastSeen) / 1000);
+        const delta = Math.floor((now - row.dataset.lastSeen) / 1000);
         cell.innerText = `${delta}s`;
       }
     }
@@ -207,7 +198,7 @@ window.addEventListener('load', () => {
     onWsReady(() => {
        // console.log("WebSocket connected, initializing requests...");
         loadFields();
-        wsSend({ cmd: "get_fanet", "min": 5}); // get not older than 5min
+        setTimeout(() => {wsSend({ cmd: "get_fanet", "min": 5});}, 700); // get not older than 5min, after station gps position is reveived
 
         setInterval(() => {
           wsSend({ cmd: "get_info_update"});
@@ -290,7 +281,7 @@ function initWebSocket() {
     const wsProtocol = (location.protocol === "https:") ? "wss://" : "ws://";
     const wsUri = wsProtocol + location.host + "/ws";
 
-    //ws = new WebSocket('ws://192.168.178.92/ws');
+    //ws = new WebSocket('ws://192.168.178.79/ws');
     ws = new WebSocket(wsUri);
 
 
@@ -339,7 +330,7 @@ function initWebSocket() {
               name: station.name,
               lat: station.lat !== undefined ? station.lat.toFixed(5) : "-",
               lon: station.lon !== undefined ? station.lon.toFixed(5) : "-",
-              dist: calculateDistanceKm(station.lat, station.lon, getVal("lat"), getVal("lon")).toFixed(1) +" km",
+              dist: station.lat !== 0 ? calculateDistanceKm(station.lat, station.lon, getVal("lat"), getVal("lon")).toFixed(1) +" km" : "-",
               temp: station.temp !== undefined ? station.temp.toFixed(1) + "°C" : "-",
               windDir: station.wHeading !== undefined ? station.wHeading.toFixed(0) + "°" : "-",
               windSpd: station.wSpeed !== undefined ? station.wSpeed.toFixed(1) + " km/h" : "-",
@@ -355,7 +346,7 @@ function initWebSocket() {
               "id", "name","dist", "temp", "windDir", "windSpd", "gust",
               "humidity", "pressure", "soc", "rssi", "lastSeen" //  "lat", "lon", 
           ]);
-      });
+      }); // {"weather":[{"vid":189,"fanet_id":50097,"name":"","rssi":-103,"snr":-9,"lat":47.74839,"lon":12.25035,"tLastMsg":1760421160,"temp":2,"wHeading":237.6563,"wSpeed":4.4,"wGust":8.6,"humidity":99.2,"baro":1028,"charge":93.33334}]}
 
     } else if (data.tracking && Array.isArray(data.tracking)) {
       data.tracking.forEach(trk => {
@@ -366,21 +357,21 @@ function initWebSocket() {
               lon: trk.lon !== undefined ? trk.lon.toFixed(5) : "-",
               dist: (trk.lat !== undefined && trk.lon !== undefined) ?
                   (calculateDistanceKm(trk.lat, trk.lon, getVal("lat"), getVal("lon")).toFixed(1) + " km") : "-",
-              alt: trk.alt !== undefined ? trk.alt.toFixed(0) + " m" : "-",
+              alt: (trk.alt !== undefined) && (trk.alt !== "-") ? trk.alt.toFixed(0) + " m" : "-",
               hdop: trk.hdop !== undefined ? (trk.hdop / 100).toFixed(2) : "-", // assuming hdop is in 1/100 m
               acft: trk.acft !== undefined ? trk.acft : "-", // aircraft type as raw value
-              spd: trk.spd !== undefined ? trk.spd.toFixed(1) + " km/h" : "-",
-              climb: trk.climb !== undefined ? trk.climb.toFixed(1) + " m/s" : "-",
-              heading: trk.heading !== undefined ? trk.heading.toFixed(0) + "°" : "-",
+              spd: (trk.spd !== undefined) && (trk.spd !== "-") ? trk.spd.toFixed(1) + " km/h" : "-",
+              climb: (trk.climb !== undefined) && (trk.climb !== "-") ? trk.climb.toFixed(1) + " m/s" : "-",
+              heading: (trk.heading !== undefined) && (trk.heading !== "-") ? trk.heading.toFixed(0) + "°" : "-",
               track: trk.track ? "Yes" : "No",
               rssi: trk.rssi !== undefined ? trk.rssi + " dBm" : "-",
               snr: trk.snr !== undefined ? trk.snr + " dB" : "-",
               lastSeen: trk.tLastMsg !== undefined ? trk.tLastMsg*1000 : "-",
-              state: "-"
+              state: trk.state !== undefined ? trk.state: "-",
           };
 
           upsertRow("trackingTable", rowData, liveTracking, [
-              "id", "name", "acft", "state", "dist", "alt", "speed", "climb", "heading", "rssi", "lastSeen" // "lat", "lon",
+              "id", "name", "acft", "state", "dist", "alt", "spd", "climb", "heading", "rssi", "lastSeen" // "lat", "lon",
           ]);
       });
     }
