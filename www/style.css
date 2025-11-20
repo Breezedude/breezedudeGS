@@ -265,3 +265,17 @@ body {
     #otaStatus, #import_status, #msg  {
       color: var(--button-text);
     }
+
+    /* --- CONSOLE TEXTAREA --- */
+.console {
+  background-color: var(--input-bg);
+  color: var(--text-color);
+  border: 1px solid var(--input-border);
+  padding: 8px;
+  margin-top: 10px;
+  border-radius: 6px;
+  font-family: monospace;
+  resize: vertical;
+  width: 99%;
+  transition: background-color 0.3s, color 0.3s, border-color 0.3s;
+}

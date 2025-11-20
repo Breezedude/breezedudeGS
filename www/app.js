@@ -85,7 +85,7 @@ function wsSend(obj) {
         ws.send(JSON.stringify(obj));
         //console.log(JSON.stringify(obj));
     } else {
-        console.warn("WebSocket is not open. ReadyState:", ws.readyState);
+        //console.warn("WebSocket is not open. ReadyState:", ws.readyState);
     }
 }
 
@@ -175,6 +175,11 @@ function updateFieldsFromData(data) {
         if(key === "msg"){
           setInterval(() => {el.innerText = "";}, 3000);
         }
+        if(key === "webconsole"){
+          const now = new Date();
+          const time = now.toLocaleTimeString();
+          el.value += `[${time}] ${data[key]}\r\n`;
+        }
 
         if(key === "disconnect"){
           updateWsStatus(false);
@@ -187,11 +192,8 @@ function updateFieldsFromData(data) {
           updateFieldsFromData({'deviceNamedisplay': data[key]});
           got_settings =true;
         }
-
-        deviceNamedisplay
     });
 }
-
 
 window.addEventListener('load', () => {
   //document.getElementById("getLocationBtn").addEventListener("click", getUserLocation);
@@ -209,8 +211,14 @@ window.addEventListener('load', () => {
     });
 
     document.getElementById('deviceName').addEventListener('input', function() {
-    validateNameField('deviceName', 'saveSettingsBtn');
-});
+      validateNameField('deviceName', 'saveSettingsBtn');
+    });
+    const clearButton  = document.getElementById('clearButton');
+    clearButton.addEventListener('click', () => {
+      let con = document.getElementById('webconsole');
+      con.value = "";
+    });
+
 });
 
 function loadFields(){
@@ -281,7 +289,7 @@ function initWebSocket() {
     const wsProtocol = (location.protocol === "https:") ? "wss://" : "ws://";
     const wsUri = wsProtocol + location.host + "/ws";
 
-    //ws = new WebSocket('ws://192.168.178.79/ws');
+    //ws = new WebSocket('ws://192.168.178.67/ws');
     ws = new WebSocket(wsUri);
 
 
@@ -341,6 +349,10 @@ function initWebSocket() {
               rssi: station.rssi !== undefined ? station.rssi + " dBm" : "-",
               lastSeen: station.tLastMsg !== undefined ? station.tLastMsg*1000 : "-"
           };
+
+          if(rowData.lastSeen < 100000000){
+            rowData.lastSeen = Date.now();
+          }
 
           upsertRow("weatherTable", rowData, weatherStations, [
               "id", "name","dist", "temp", "windDir", "windSpd", "gust",

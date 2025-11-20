@@ -1,5 +1,7 @@
 #include "aprs.h"
 
+extern void webconsole_print(String in);
+
 Aprs::Aprs(){
     _user = "";
     client = NULL;
@@ -110,6 +112,7 @@ void Aprs::checkLine(String line){
       //log_i("%s:%s",getActTimeString().c_str(),line.c_str());
     }
     if (initOk == INIT_NONE){
+        webconsole_print(line);
         pos = getStringValue(line,"server ","\r\n",0,&s);
         if (pos > 0){
             tStatus = 0;
@@ -232,9 +235,10 @@ void Aprs::sendNameData(String devId,String name,float snr){
     String sTime = getActTimeString();
     if (sTime.length() <= 0) return;
     char buff[200];
-    sprintf (buff,"%s%s>%s,qAS,%s:>%sh Name=\"%s\" %0.1fdB\r\n","FNT",devId.c_str(),_user.c_str(),aprsTag,sTime.c_str(),name.c_str(),snr);
+    sprintf (buff,"%s%s>%s,qAS,%s:>%sh Name=\"%s\" %0.1fdB\r\n","FNT",devId.c_str(),aprsTag,_user.c_str(),sTime.c_str(),name.c_str(),snr);
     
     client->print(buff); 
+    webconsole_print(buff);
     client->flush();   
     //log_i("%s",buff);
 
@@ -292,9 +296,8 @@ bool Aprs::sendWeatherData(weatherData *wData){
     sprintf (buff," %0.1fdB\r\n",wData->snr);
     send += buff;
 
-    
-   
     size_t res = client->print(send.c_str()); 
+    webconsole_print(send);
     client->flush();
                
     
@@ -324,8 +327,8 @@ void Aprs::sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt
   sprintf (buff,"%s%s>%s,qAS,%s:/%sh%02d%02d.%02d%c\\%03d%02d.%02d%cn%s !W%01d%01d! id%02X%s FNT%X %0.1fdB\r\n" //3F OGN-Tracker and device 15
   ,getOrigin(adressType).c_str(),devId.c_str(),aprsTag,_user.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(lon < 0)?'W':'E',altBuff,int(latMin %10),int(latMin %10),getSenderDetails(true,aircraft_t::STATIC_OBJECT),devId.c_str(),state,snr);
   
- 
   client->print(buff);
+  webconsole_print(buff);
   client->flush();
                 
   //log_i("%s",buff);
@@ -389,9 +392,8 @@ void Aprs::sendTrackingData(trackingData *td){
     pos += snprintf(&buff[pos],255-pos,"FNT1%d ",getFANETAircraftType((aircraft_t)(td->aircraftType)));
     pos += snprintf(&buff[pos],255-pos,"%0.1fdB\r\n",td->snr);
     client->print(buff);
+    webconsole_print(buff);
     client->flush();
-                    
-    
 }
 
 void Aprs::setStatusData(float pressure, float temp,float hum, float battVoltage,uint8_t battPercent){
@@ -426,6 +428,7 @@ void Aprs::sendReceiverStatus(String sTime){
     
    
     client->print(sStatus);
+    webconsole_print(sStatus);
     client->flush();
 
     
@@ -451,6 +454,7 @@ void Aprs::sendReceiverBeacon(String sTime){
     }
 
     client->print(buff);
+    webconsole_print(buff);
     client->flush();
  
     

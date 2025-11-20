@@ -41,7 +41,7 @@
 #define PIN_LED 35
 #define PIN_USERBTN 0
 
-String fw_version = "0.3";
+String fw_version = "0.4";
 
 SX1262 radio_sx1262 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_BUSY);
 PhysicalLayer* radio_phy = nullptr;
@@ -72,11 +72,20 @@ extern weatherData weatherStore[MAX_DEVICES];
 extern trackingData trackingStore[MAX_DEVICES];
 
 bool wifiConnected = false;
-unsigned long wifiLastAttempt = 0;
+unsigned long wifiLastAttempt = -1;
 const unsigned long wifiRetryInterval = 10000; // retry every 10 sec
 bool forceReconnectSTA = false;
 bool restartAP = false;
 
+void webconsole_print(String in){
+  if(ws.availableForWriteAll()){
+    in.trim();
+    in.replace("\"", "\\\""); // escape quotes for json
+    String text = "{\"webconsole\":\""+ in  +"\"}"; // remove newline
+    ws.textAll(text);
+    //Serial.println(text);
+  }
+}
 
 void setDeviceName(uint8_t vid, uint16_t fanet_id, String name) {
     for (int i = 0; i < MAX_DEVICES; i++) {
@@ -265,6 +274,7 @@ void server_setup(){
 
 void run_wifi() {
   static uint32_t lastcheck = 0;
+  static int connect_error_count =0;
   static bool ap_started = false;
   static bool server_started = false;
   if(millis()-lastcheck > 300){
@@ -308,11 +318,13 @@ void run_wifi() {
     // STA connection handling
     if(forceReconnectSTA){
       // Todo: disconnect to force reconnect
+      connect_error_count =0;
     }
     if (WiFi.status() != WL_CONNECTED) {
       wifiConnected = false;
-        if (forceReconnectSTA || (millis() - wifiLastAttempt >= wifiRetryInterval)) {
+        if (forceReconnectSTA || ((millis() - wifiLastAttempt >= wifiRetryInterval)&& connect_error_count <3)) {
             wifiLastAttempt = millis();
+            connect_error_count ++;
             forceReconnectSTA = false;
             Serial.println("Attempting WiFi connection to SSID: " + String(settings.wifi_ssid));
             WiFi.begin(settings.wifi_ssid, settings.wifi_password);
@@ -324,6 +336,7 @@ void run_wifi() {
     } else {
         if (!wifiConnected) {
             wifiConnected = true;
+            connect_error_count =0;
             Serial.println("Connected to WiFi, IP: " + WiFi.localIP().toString());
         }
     }
