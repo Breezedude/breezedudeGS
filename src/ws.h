@@ -211,6 +211,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         resp["aprsServer"] = settings.aprsServer;
         resp["aprsPort"] = settings.aprsPort;
         resp["sendBreezedude"] = settings.sendBreezedude;
+        resp["autoUpdate"] = settings.autoUpdate;
         String output;
         serializeJson(resp, output);
         client->text(output);
@@ -300,8 +301,9 @@ else if (strcmp(cmd, "save_settings") == 0) {
     settings.elevation     = doc["elevation"].as<int>();
     settings.sendAPRS      = doc["sendAPRS"].as<bool>();
     settings.aprsPort      = doc["aprsPort"].as<int>();
-    settings.sendBreezedude= doc["sendBreezedude"].as<bool>();;
-
+    settings.sendBreezedude= doc["sendBreezedude"].as<bool>();
+    settings.autoUpdate    = doc["autoUpdate"].as<bool>();
+    
     save_preferences();
     client->text("{\"msg\":\"Settings saved\"}");
     update_aprs_settings();

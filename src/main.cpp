@@ -7,6 +7,7 @@
 #include <AsyncTCP.h>
 #include "FS.h"
 #include <LittleFS.h>
+#include <esp32FOTA.hpp> // https://github.com/chrisjoyce911/esp32FOTA/tree/master
 
 #include <DNSServer.h>
 #include <Update.h>
@@ -41,7 +42,11 @@
 #define PIN_LED 35
 #define PIN_USERBTN 0
 
-String fw_version = "0.4";
+String fw_version = "0.5.0";
+
+// for automatic updates, echeckt on connect and every 6 hours
+esp32FOTA esp32FOTA("bd-gs-stable", fw_version, false, true);
+const char* manifest_url = "https://install.breezedude.de/gs-update.json";
 
 SX1262 radio_sx1262 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_BUSY);
 PhysicalLayer* radio_phy = nullptr;
@@ -271,6 +276,25 @@ void server_setup(){
     });
 }
 
+void check_update(){
+  static uint32_t last_updatecheck = 0;
+  if(settings.autoUpdate){
+    if( (last_updatecheck == 0) || (millis() - last_updatecheck > 6*3600*1000)){
+      last_updatecheck = millis();
+      bool updatedNeeded = esp32FOTA.execHTTPcheck();
+      if (updatedNeeded){
+        Serial.println("Installing update over internet");
+        esp32FOTA.execOTA();
+      } else {
+        char buff[10];
+        memset(buff,'\0', 10);
+        esp32FOTA.getPayloadVersion(buff);
+        Serial.printf("Firmware Current Version: %s, Online Version %s", fw_version, buff);
+      }
+    }
+  }
+}
+
 
 void run_wifi() {
   static uint32_t lastcheck = 0;
@@ -281,7 +305,6 @@ void run_wifi() {
     lastcheck = millis();
 
     bool apEnabled = settings.keepAP || (WiFi.status() != WL_CONNECTED); // enable ap if not connected or AP should keep running
-
     if (apEnabled) {
         if (WiFi.getMode() != WIFI_AP_STA) {
             Serial.println("Switching to AP+STA mode");
@@ -333,12 +356,20 @@ void run_wifi() {
             //WiFi.setAutoReconnect(false);
             //WiFi.setTxPower(WIFI_POWER_17dBm);
         }
+        if( connect_error_count >=3 ){
+          WiFi.disconnect(false);
+          WiFi.enableAP(true);
+        }
+        if(millis()- wifiLastAttempt > 1000*60*60){
+          connect_error_count = 0; // retry every hour
+        }
     } else {
         if (!wifiConnected) {
             wifiConnected = true;
             connect_error_count =0;
             Serial.println("Connected to WiFi, IP: " + WiFi.localIP().toString());
         }
+        check_update();
     }
   }
 
@@ -387,6 +418,9 @@ void setup() {
     } else {
       load_preferences();
     }
+
+    esp32FOTA.setManifestURL( manifest_url );
+    esp32FOTA.printConfig();
 
     // init buffers
     for (int i = 0; i < MAX_DEVICES; i++) {

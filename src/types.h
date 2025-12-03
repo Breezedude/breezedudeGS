@@ -1,6 +1,7 @@
  #pragma once
  #include <Arduino.h>
  #include "config_template.h"
+ //#include "config.h"
 
 struct Settings {
   char wifi_ssid[64];
@@ -16,6 +17,7 @@ struct Settings {
   char deviceName[12];
   bool keepAP;
   bool sendBreezedude;
+  bool autoUpdate;
 
   Settings() {
    strncpy(wifi_ssid, DEFAULT_STA_SSID, sizeof(wifi_ssid));
@@ -30,6 +32,7 @@ struct Settings {
    strncpy(deviceName, "MyGS", sizeof(deviceName));
    keepAP = true;
    sendBreezedude = true;
+   autoUpdate = true;
  }
 };
 
