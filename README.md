@@ -44,16 +44,18 @@ Multicore is not explicitly required. The project uses **[RadioLib](https://gith
 If you miss some features let me know.
 
 ## Installing Using WebFlasher (recommended)
-Visit [Breezedude Web Installer](https://install.breezedude.de/), connect your Heltec Wirless Stick V3 and write the firmware.    
+Visit [Breezedude Web Installer](https://install.breezedude.de/) (requires [WebSerial compatible](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API#browser_compatibility) browser), connect your Heltec Wirless Stick V3 and write the firmware.    
 Continue with Configuration. Check Console/Log if its not working out of the box.
 
 ## 🎚️ Configuration
 - Flash device and connect to WiFi AP `BD-Groundstation` default password is `configureme`
-- Follow captive portal or open `192.168.4.1`
+- Follow captive portal or open [192.168.4.1](http://192.168.4.1) if you get not directed automatically
 - Set up your values for WiFi, name and position
-- If everything is set up correctly, enable sending data to OGN by filling `aprs.glidernet.org` in APRS Server. Port is 14580
+- If everything is set up correctly, enable sending data to OGN by enableing the checkbox and filling `aprs.glidernet.org` in APRS Server. Port is 14580
 
-If something went wrong, you can reset to factory config by pressing and holding user button *shortly after* pressing Reset button. If pressing user button while pressing reset button you will enter esp download mode.
+If something went wrong, you can reset to factory config by pressing and holding user button *shortly after* pressing Reset button. It will be confirmed by a short blink of the white onboard LED. If pressing user button while pressing reset button you will enter esp download mode.
+
+For debugging you may connect to your device using [Breezedude Web Installer](https://install.breezedude.de/) and open the console by clicking `Logs & Console`
 
 ## ↗ Updating
 ### Using Web Update (recommended)
@@ -66,7 +68,7 @@ Open configuration page of breezedude groundstation
 This should work most of the time. If some changes break the updater, an clean upload with WebFlasher/PIO may be required.
 
 ### Using Fresh install
-You can write a fresh firmware image for updating. Either using the WebFlasher or Building & Uploading with PIO. This is required if the integrated web updater fails updating.
+You can write a fresh firmware image for updating. Either using the [Breezedude Web Installer](https://install.breezedude.de/) or Building & Uploading with PIO. This may be required if the integrated web updater fails updating.
 
 ## 🛠 Build from source using VSCode & PIO
 
@@ -86,8 +88,8 @@ Steps:
 > `pre:install_deps.py` will run `npm i` in `/bundle` for minifying HTML+JS
 
 > [!NOTE]
-> The script `post:copy_firmware.py` wil run automatically on build and generate and copy the files for web-update to the project root.    
-> The script `post:generate_webbin.py` wil run automatically on build and generate and copy the all-in-one.bin for webflashing to the project root.
+> The script `post:copy_firmware.py` will run automatically on build and generate and copy the files for web-update to the project root.    
+> The custom Task `Build & Bundle all` will generate the all-in-one.bin for webflashing (saved to the project root).
 
 -----
 
