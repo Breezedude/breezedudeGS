@@ -44,8 +44,30 @@ Multicore is not explicitly required. The project uses **[RadioLib](https://gith
 If you miss some features let me know.
 
 ## Installing Using WebFlasher (recommended)
-Visit [Breezedude Web Installer](https://install.breezedude.de/) (requires [WebSerial compatible](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API#browser_compatibility) browser), connect your Heltec Wirless Stick V3 and write the firmware.    
-Continue with Configuration. Check Console/Log if its not working out of the box.
+Visit [Breezedude Web Installer](https://install.breezedude.de/) (requires Chrome or a [WebSerial compatible](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API#browser_compatibility) browser)
+1. Connect the Heltec Wireless Stick to your computer using a USB C cable
+<img width="350" alt="image" src="https://github.com/user-attachments/assets/a6531162-342d-451e-a6b7-8a10b61af8cc" />
+
+2. Click Connect. A popup Window opens in yur browser. You should see a CP2102 device in the list.     
+<img width="350" alt="image" src="https://github.com/user-attachments/assets/3b85e4ce-6576-4db2-aef7-6748996edf04" />
+     
+3. Select the device and click connect     
+<img width="350" alt="image" src="https://github.com/user-attachments/assets/f055c86a-501b-42d5-959b-f0bdbacbbb8c" />
+
+4. Select `erase device` and click next
+<img width="350" alt="image" src="https://github.com/user-attachments/assets/3efdccf4-d291-4d38-9372-790de954f70e" />
+
+5. Click `Install` to start the installation
+<img width="350" alt="image" src="https://github.com/user-attachments/assets/ddcac6d5-5fcd-426b-a253-3c1b15c84a0e" />
+
+6. Wait for the installation to finish
+<img width="350" alt="image" src="https://github.com/user-attachments/assets/7e489b64-44f0-4a5d-bf4d-22bda8a99556" />
+
+7. You should find a "BD-Groundstation" WiFi. Connect using the default password `configureme`. Continue with the Configuration
+<img width="150" alt="image" src="https://github.com/user-attachments/assets/b4301a59-db89-4be0-bde2-599cbccdac62" />
+
+If its not working out of the box, check `Console/Log` for error messages
+
 
 ## 🎚️ Configuration
 - Flash device and connect to WiFi AP `BD-Groundstation` default password is `configureme`
