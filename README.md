@@ -43,6 +43,12 @@ Multicore is not explicitly required. The project uses **[RadioLib](https://gith
 
 If you miss some features let me know.
 
+## Power Consuption
+using a stock Heltec Wireless Stick V3 Lite:
+- BreezedudeGS AP+STA: avg. 124mA @ 5V
+- BreezedudeGS STA: avg. 59mA @ 5V
+
+
 ## Installing Using WebFlasher (recommended)
 Visit [Breezedude Web Installer](https://install.breezedude.de/) (requires Chrome or a [WebSerial compatible](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API#browser_compatibility) browser)
 1. Connect the Heltec Wireless Stick to your computer using a USB C cable
