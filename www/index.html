@@ -169,6 +169,7 @@
         <label class="checkbox-label">
           <input type="checkbox" id="sendAPRS" name="sendAPRS" onchange="toggleAPRSInputs()"> Send data to APRS server (e.g. OGN)
         </label>
+        <small id="aprsSetupHint" style="display:none; color: var(--muted-text);">APRS and Send-to-Breezedude are locked while default values are set. Please set device name and position (lat/lon) carefully.</small>
         <div id="aprsInputs" style="display:flex; flex-direction:column; gap:6px; margin-top:6px; margin-left:22px;">
           <div>
             <span class="info-label">APRS Server</span>
@@ -206,7 +207,6 @@
 
     </div>
     <button id="saveSettingsBtn" onclick="saveSettings()">Save Settings</button>
-    <button id="setupWizardBtn" style="display:none" onclick="startSetupWizard()">Einrichtungsassistent</button>
   </div>
 </div>
 
@@ -329,5 +329,6 @@
 </div>
   <p id="status"></p>
   </div>
+
 </body>
 </html>

@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <esp_wifi.h>
+#include <math.h>
 #include "aprs.h"
 
 #define HTTPTIMEOUT 1500
@@ -95,6 +96,18 @@ bool hasDefaultSettings() {
                  settings.longitude == 12.0f &&
                  settings.elevation == 400 &&
                  settings.keepAP == true;
+}
+
+bool hasRequiredSetupValues(const char* deviceName, float lat, float lon) {
+    if (deviceName == nullptr) return false;
+    bool nameChanged = strcmp(deviceName, "MyGS") != 0;
+    bool latChanged = fabsf(lat - 47.0f) > 0.00001f;
+    bool lonChanged = fabsf(lon - 12.0f) > 0.00001f;
+    return nameChanged && latChanged && lonChanged;
+}
+
+bool isRequiredSetupComplete() {
+    return hasRequiredSetupValues(settings.deviceName, settings.latitude, settings.longitude);
 }
 
 
@@ -414,7 +427,6 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         resp["sendBreezedude"] = settings.sendBreezedude;
         resp["autoUpdate"] = settings.autoUpdate;
         resp["updateBranch"] = settings.updateBranch;
-        resp["showSetupWizard"] = hasDefaultSettings();
         String output;
         serializeJson(resp, output);
         client->text(output);
@@ -523,9 +535,18 @@ else if (strcmp(cmd, "save_settings") == 0) {
     settings.longitude     = doc["lon"].as<float>();
     settings.latitude      = doc["lat"].as<float>();
     settings.elevation     = doc["elevation"].as<int>();
-    settings.sendAPRS      = doc["sendAPRS"].as<bool>();
+    bool requiredSetupComplete = hasRequiredSetupValues(settings.deviceName, settings.latitude, settings.longitude);
+    bool requestedSendAprs = doc["sendAPRS"].as<bool>();
+    bool requestedSendBreezedude = doc["sendBreezedude"].as<bool>();
+    if (!requiredSetupComplete && (requestedSendAprs || requestedSendBreezedude)) {
+        settings.sendAPRS = false;
+        settings.sendBreezedude = false;
+        client->text("{\"msg\":\"APRS und Send-to-Breezedude bleiben deaktiviert: Bitte Name sowie Latitude/Longitude sorgsam setzen und speichern.\"}");
+    } else {
+        settings.sendAPRS = requestedSendAprs;
+        settings.sendBreezedude = requestedSendBreezedude;
+    }
     settings.aprsPort      = doc["aprsPort"].as<int>();
-    settings.sendBreezedude= doc["sendBreezedude"].as<bool>();
     settings.autoUpdate    = doc["autoUpdate"].as<bool>();
     strncpy(settings.updateBranch, new_updateBranch, sizeof(settings.updateBranch));
     settings.updateBranch[sizeof(settings.updateBranch)-1] = '\0';
@@ -538,10 +559,6 @@ else if (strcmp(cmd, "save_settings") == 0) {
         onUpdateBranchChanged();
     }
 }
-
-    else if (strcmp(cmd, "start_setup_wizard") == 0) {
-        client->text("{\"msg\":\"Setup wizard not implemented yet\"}");
-    }
 
     else if (strcmp(cmd, "reboot") == 0) {
         

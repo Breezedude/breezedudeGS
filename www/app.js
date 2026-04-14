@@ -131,6 +131,12 @@ let lastWsMessageTime = Date.now();
 const WS_TIMEOUT_MS = 5000; // 5 seconds without message = disconnected
 let got_settings = false;
 
+const REQUIRED_DEFAULTS = {
+  deviceName: "MyGS",
+  lat: 47.0,
+  lon: 12.0
+};
+
 // Section toggler
 function toggleSection(header) {
   const content = header.nextElementSibling;
@@ -204,9 +210,52 @@ function togglePasswordVisibility(inputId, buttonEl) {
   }
 }
 
-function startSetupWizard() {
-  wsSend({ cmd: "start_setup_wizard" });
-  updateFieldsFromData({ msg: "Einrichtungsassistent folgt in einem späteren Update." });
+function parseNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isNameConfigured(name) {
+  const value = (name || "").trim();
+  const isValidLength = value.length >= 3 && value.length <= 9;
+  const isValidChars = /^[A-Za-z0-9]+$/.test(value);
+  return isValidLength && isValidChars && value !== REQUIRED_DEFAULTS.deviceName;
+}
+
+function isPositionConfigured(latValue, lonValue) {
+  const lat = parseNumber(latValue);
+  const lon = parseNumber(lonValue);
+  if (lat === null || lon === null) return false;
+  return Math.abs(lat - REQUIRED_DEFAULTS.lat) > 0.00001 && Math.abs(lon - REQUIRED_DEFAULTS.lon) > 0.00001;
+}
+
+function isRequiredSetupCompleteFromInputs() {
+  const nameInput = document.getElementById("deviceName");
+  const latInput = document.getElementById("lat");
+  const lonInput = document.getElementById("lon");
+  if (!nameInput || !latInput || !lonInput) return false;
+  return isNameConfigured(nameInput.value) && isPositionConfigured(latInput.value, lonInput.value);
+}
+
+function updateAprsGuardUi(showMessage = false) {
+  const sendAprs = document.getElementById("sendAPRS");
+  const sendBreezedude = document.getElementById("sendBreezedude");
+  const hint = document.getElementById("aprsSetupHint");
+  if (!sendAprs || !sendBreezedude) return;
+
+  const setupComplete = isRequiredSetupCompleteFromInputs();
+  sendAprs.disabled = !setupComplete;
+  sendBreezedude.disabled = !setupComplete;
+  if (!setupComplete) {
+    sendAprs.checked = false;
+    sendBreezedude.checked = false;
+  }
+  if (hint) {
+    hint.style.display = setupComplete ? "none" : "block";
+  }
+  if (!setupComplete && showMessage) {
+    updateFieldsFromData({ msg: "APRS und Send-to-Breezedude bleiben deaktiviert: Bitte Name sowie Latitude/Longitude sorgsam setzen." });
+  }
 }
 
 
@@ -224,6 +273,15 @@ function get_inputs_from_element(id){
 
 function saveSettings() {
   const data = get_inputs_from_element('div_settings')
+  if (!isRequiredSetupCompleteFromInputs()) {
+    data.sendAPRS = false;
+    data.sendBreezedude = false;
+    const sendAprs = document.getElementById("sendAPRS");
+    const sendBreezedude = document.getElementById("sendBreezedude");
+    if (sendAprs) sendAprs.checked = false;
+    if (sendBreezedude) sendBreezedude.checked = false;
+    updateFieldsFromData({ msg: "APRS und Send-to-Breezedude bleiben deaktiviert bis Name und Position sorgsam gesetzt sind." });
+  }
   wsSend({ cmd: "save_settings", ...data });
   setTimeout(loadFields, 150);
 }
@@ -416,13 +474,9 @@ function updateFieldsFromData(data) {
           updateFieldsFromData({'deviceNamedisplay': data[key]});
           got_settings =true;
         }
-        if (key === "showSetupWizard") {
-          const btn = document.getElementById("setupWizardBtn");
-          if (btn) {
-            btn.style.display = data[key] ? "inline-block" : "none";
-          }
-        }
     });
+
+    updateAprsGuardUi(false);
 }
 
 window.addEventListener('load', () => {
@@ -442,7 +496,10 @@ window.addEventListener('load', () => {
 
     document.getElementById('deviceName').addEventListener('input', function() {
       validateNameField('deviceName', 'saveSettingsBtn');
+      updateAprsGuardUi(false);
     });
+    document.getElementById('lat').addEventListener('input', () => updateAprsGuardUi(false));
+    document.getElementById('lon').addEventListener('input', () => updateAprsGuardUi(false));
     const clearButton  = document.getElementById('clearButton');
     clearButton.addEventListener('click', () => {
       let con = document.getElementById('webconsole');
@@ -692,7 +749,9 @@ function initWebSocket() {
 initWebSocket();
 
 function toggleAPRSInputs() {
-    const enabled = document.getElementById("sendAPRS").checked;
+  updateAprsGuardUi(true);
+  const sendAprs = document.getElementById("sendAPRS");
+  const enabled = sendAprs && sendAprs.checked && !sendAprs.disabled;
     document.getElementById("aprsServer").disabled = !enabled;
     document.getElementById("aprsPort").disabled = !enabled;
 }
