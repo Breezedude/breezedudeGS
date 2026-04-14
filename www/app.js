@@ -1,7 +1,127 @@
 // Maps of ID -> row DOM elements and last seen timestamp
 const weatherStations = new Map();
 const liveTracking = new Map();
+const stationHwInfo = new Map(); // stationId -> { raw, merged }
 const MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+
+const SENSOR_TYPE_NAMES = [
+  'invalid',
+  'WS80',
+  'WS85',
+  'WS85_UART',
+  'DAVIS6410',
+  'WINDNERD'
+];
+
+function sensorTypeToName(sensorType) {
+  if (Number.isInteger(sensorType) && sensorType >= 0 && sensorType < SENSOR_TYPE_NAMES.length) {
+    return SENSOR_TYPE_NAMES[sensorType];
+  }
+  return `unknown(${sensorType})`;
+}
+
+function decodeHwInfoDebug(rawBytes) {
+  const result = { decode_type: null };
+  if (!Array.isArray(rawBytes) || rawBytes.length === 0) return result;
+  const bytes = rawBytes.map((v) => Number(v) & 0xFF);
+  result.decode_type = bytes[0];
+  // decode_type 0x01: vbatt, batt_perc, pv_state, cfg flags, lbt_counter, rssi_threshold, version_bcd
+  if (result.decode_type === 0x01 && bytes.length >= 10) {
+    result.vbatt_mv             = bytes[1] | (bytes[2] << 8);
+    result.batt_perc            = bytes[3];
+    result.pv_state             = bytes[4];
+    const cfg                   = bytes[5];
+    result.sensor_type          = cfg & 0x1F;
+    result.sensor_type_text     = sensorTypeToName(result.sensor_type);
+    result.use_baro             = ((cfg >> 5) & 0x01) === 1;
+    result.uv_triggered         = ((cfg >> 6) & 0x01) === 1;
+    result.lbt                  = ((cfg >> 7) & 0x01) === 1;
+    result.lbt_counter          = bytes[6];
+    result.lora_rssi_threshold  = -bytes[7];
+    const vbcd                  = bytes[8] | (bytes[9] << 8);
+    result.version_bcd          = vbcd;
+    const vMajor                = (vbcd >> 8) & 0x0F;
+    const vMinor                = (vbcd >> 4) & 0x0F;
+    const vPatch                = vbcd & 0x0F;
+    result.version              = `${vMajor}.${vMinor}.${vPatch}`;
+  }
+  // decode_type 0x02: gust_age, wind_age, sensor_integ_s, reduce_interval_voltage
+  if (result.decode_type === 0x02 && bytes.length >= 7) {
+    result.gust_age                 = bytes[1] | (bytes[2] << 8);
+    result.wind_age                 = bytes[3] | (bytes[4] << 8);
+    result.sensor_integ_s           = bytes[5];
+    result.reduce_interval_voltage  = 2 + bytes[6] / 100.0;
+  }
+  return result;
+}
+
+function buildHwInfoHtml(hi, merged) {
+  const row = (label, value) =>
+    `<div class="hwinfo-row-item"><span class="hwinfo-label">${label}</span><span class="hwinfo-value">${value}</span></div>`;
+  const buildDate = (hi.buildYear && hi.buildMonth && hi.buildDay)
+    ? `${hi.buildYear}-${String(hi.buildMonth).padStart(2, '0')}-${String(hi.buildDay).padStart(2, '0')}`
+    : null;
+  let items = '';
+  if (buildDate)                          items += row('Build Date', buildDate + (hi.isDevelopmentBuild ? ' <em>(dev)</em>' : ''));
+  if (merged.version !== undefined)       items += row('FW Version', merged.version);
+  if (hi.hasUptime && hi.uptimeMinutes !== undefined) items += row('Uptime', hi.uptimeMinutes + ' min');
+  if (merged.vbatt_mv !== undefined)      items += row('Battery', (merged.vbatt_mv / 1000).toFixed(2) + ' V (' + merged.batt_perc + '%)');
+  if (merged.pv_state !== undefined)      items += row('PV State', merged.pv_state);
+  if (merged.sensor_type_text !== undefined) items += row('Sensor Type', merged.sensor_type_text);
+  else if (merged.sensor_type !== undefined) items += row('Sensor Type', merged.sensor_type);
+  if (merged.lora_rssi_threshold !== undefined) items += row('LoRa RSSI Thr.', merged.lora_rssi_threshold + ' dBm');
+  if (merged.lbt !== undefined)           items += row('LBT', merged.lbt ? 'on (' + merged.lbt_counter + ')' : 'off');
+  if (merged.gust_age !== undefined)      items += row('Gust Age', merged.gust_age + ' s');
+  if (merged.wind_age !== undefined)      items += row('Wind Age', merged.wind_age + ' s');
+  if (merged.sensor_integ_s !== undefined) items += row('Sensor Integ.', merged.sensor_integ_s + ' s');
+  if (merged.reduce_interval_voltage !== undefined) items += row('Reduce V', merged.reduce_interval_voltage.toFixed(2) + ' V');
+  return `<div class="hwinfo-grid">${items}</div>`;
+}
+
+function toggleHwInfoRow(stationId, dataRow) {
+  const next = dataRow.nextElementSibling;
+  if (next && next.classList.contains('hwinfo-row')) {
+    next.style.display = next.style.display === 'none' ? '' : 'none';
+    return;
+  }
+  const detailRow = document.createElement('tr');
+  detailRow.classList.add('hwinfo-row');
+  const td = document.createElement('td');
+  td.colSpan = 12;
+  td.className = 'hwinfo-detail';
+  const hwi = stationHwInfo.get(stationId);
+  td.innerHTML = hwi ? buildHwInfoHtml(hwi.raw, hwi.merged) : '<em style="color:var(--muted-text)">No HW info received yet</em>';
+  detailRow.appendChild(td);
+  dataRow.parentNode.insertBefore(detailRow, dataRow.nextSibling);
+}
+
+const MOBILE_LABELS = {
+  weatherTable: {
+    name: "Name",
+    dist: "Dist",
+    temp: "Temp",
+    windDir: "Wind Dir",
+    windSpd: "Wind Spd",
+    gust: "Gust",
+    humidity: "Hum.",
+    pressure: "Baro",
+    soc: "SoC",
+    rssi: "RSSI",
+    lastSeen: "Last Seen"
+  },
+  trackingTable: {
+    name: "Name",
+    acft: "Type",
+    state: "State",
+    dist: "Dist",
+    alt: "Alt",
+    spd: "Speed",
+    climb: "Climb",
+    heading: "Heading",
+    rssi: "RSSI",
+    lastSeen: "Last Seen"
+  }
+};
 
 let ws;
 let ws_connected = false;
@@ -49,9 +169,49 @@ function saveWiFi() {
     setTimeout(loadFields, 150);
 }
 
+function scanWiFi() {
+  const select = document.getElementById("wifiScanResults");
+  const scanBtn = document.getElementById("wifiScanBtn");
+  if (select) {
+    select.style.display = 'none';
+    select.innerHTML = '';
+  }
+  if (scanBtn) {
+    scanBtn.disabled = true;
+    scanBtn.textContent = "Scanning...";
+  }
+  wsSend({ cmd: "wifi_scan" });
+}
+
+function applySelectedWiFi() {
+  const select = document.getElementById("wifiScanResults");
+  const ssidInput = document.getElementById("sta_ssid");
+  if (!select || !ssidInput) return;
+  if (select.value) {
+    ssidInput.value = select.value;
+  }
+}
+
+function togglePasswordVisibility(inputId, buttonEl) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const isPassword = input.type === "password";
+  input.type = isPassword ? "text" : "password";
+  if (buttonEl) {
+    buttonEl.classList.toggle("is-visible", isPassword);
+    buttonEl.setAttribute("aria-label", isPassword ? "Passwort verbergen" : "Passwort anzeigen");
+    buttonEl.setAttribute("title", isPassword ? "Passwort verbergen" : "Passwort anzeigen");
+  }
+}
+
+function startSetupWizard() {
+  wsSend({ cmd: "start_setup_wizard" });
+  updateFieldsFromData({ msg: "Einrichtungsassistent folgt in einem späteren Update." });
+}
+
 
 function get_inputs_from_element(id){
-    const inputs =  Array.from(document.getElementById(id).querySelectorAll("input"));
+  const inputs =  Array.from(document.getElementById(id).querySelectorAll("input, select"));
     const fields = {};
     inputs.forEach(input => {
         const id = input.id || input.name;
@@ -115,11 +275,41 @@ function upsertRow(tableId, data, rowMap, columns) {
     if (cell) {
       if (key === "lastSeen") {
         row.dataset.lastSeen = parseInt(data.lastSeen || "0", 10);
-      } else {
+      } else if(key === "dist"){
+        cell.innerHTML = "<a href='https://www.google.com/maps/search/?api=1&query=" + data.lat + "," + data.lon + "' target='_blank' style='color: inherit; text-decoration: none;'>" + (data[key] !== undefined ? data[key] : "") + "</a>";
+        } else{
         cell.innerText = data[key] !== undefined ? data[key] : "";
       }
     }
   });
+
+  // Build compact mobile content inside 2nd column so small screens show: ID | Data
+  if (columns.length > 1) {
+    const secondKey = columns[1];
+    const secondCell = row.querySelector(`[data-key="${secondKey}"]`);
+    if (secondCell) {
+      const labels = MOBILE_LABELS[tableId] || {};
+      const details = columns
+        .slice(1)
+        .map((key) => {
+          const label = labels[key] || key;
+          if (key === "lastSeen") {
+            const ts = Number(row.dataset.lastSeen || Date.now());
+            const delta = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+            return `<div><strong>${label}:</strong> <span class="mobile-last-seen">${delta}s</span></div>`;
+          }
+          const value = data[key] !== undefined ? data[key] : "";
+          return `<div><strong>${label}:</strong> ${value}</div>`;
+        })
+        .join("");
+
+      secondCell.classList.add("summary-cell");
+      secondCell.innerHTML = `
+        <span class="desktop-only-value">${data[secondKey] !== undefined ? data[secondKey] : ""}</span>
+        <div class="mobile-stack">${details}</div>
+      `;
+    }
+  }
 }
 
 // Clean up old entries
@@ -127,6 +317,8 @@ function removeOldRows(rowMap, maxAgeMs) {
   const now = Date.now();
   for (const [id, row] of rowMap.entries()) {
     if (now - row.dataset.lastSeen > maxAgeMs) {
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains('hwinfo-row')) next.remove();
       row.remove();
       rowMap.delete(id);
     }
@@ -138,10 +330,16 @@ function updateLastSeenCounters() {
   const now = Date.now();
   [weatherStations, liveTracking].forEach(rowMap => {
     for (const [id, row] of rowMap.entries()) {
+      const delta = Math.max(0, Math.floor((now - Number(row.dataset.lastSeen || now)) / 1000));
+
       const cell = row.querySelector('[data-key="lastSeen"]');
       if (cell) {
-        const delta = Math.floor((now - row.dataset.lastSeen) / 1000);
         cell.innerText = `${delta}s`;
+      }
+
+      const mobileLastSeen = row.querySelector('.mobile-last-seen');
+      if (mobileLastSeen) {
+        mobileLastSeen.innerText = `${delta}s`;
       }
     }
   });
@@ -156,6 +354,23 @@ setInterval(() => {
 
 
 function updateFieldsFromData(data) {
+
+    const updateLink = document.getElementById("update_link");
+    const updateNotice = document.getElementById("update_notice");
+
+
+    if (updateLink && updateNotice) {
+      const hasUpdate = !!data.update_available;
+      const updateVersion = data.update_version || "";
+      if (hasUpdate && updateVersion) {
+        updateNotice.innerText = `-> ${updateVersion} Update verfügbar`;
+        updateLink.style.display = "inline";
+      } else if (data.update_available === false || data.update_version !== undefined) {
+        updateNotice.innerText = "";
+        updateLink.style.display = "none";
+      }
+    }
+
     Object.keys(data).forEach(key => {
         const el = document.getElementById(key);
         if (el) {
@@ -165,20 +380,25 @@ function updateFieldsFromData(data) {
                 } else {
                     el.value = data[key];
                 }
+          } else if (el.tagName === 'SELECT') {
+            el.value = data[key];
             } else {
                 el.innerText = data[key];
             }
         } else {
-            console.warn(`Element with id '${key}' not found.`);
+            //console.warn(`Element with id '${key}' not found.`);
         }
 
         if(key === "msg"){
           setInterval(() => {el.innerText = "";}, 3000);
         }
         if(key === "webconsole"){
-          const now = new Date();
-          const time = now.toLocaleTimeString();
-          el.value += `[${time}] ${data[key]}\r\n`;
+          if(data[key]) {
+            const now = new Date();
+            const time = now.toLocaleTimeString();
+            if(el.value && !el.value.endsWith('\n')) el.value += '\r\n';
+            el.value += `[${time}] ${data[key]}\r\n`;
+          }
         }
 
         if(key === "disconnect"){
@@ -188,9 +408,19 @@ function updateFieldsFromData(data) {
         if(key === "sendAPRS" && data[key] == false){
           toggleAPRSInputs();
         }
+        if(key === "updateBranch") {
+          const warning = document.getElementById('betaWarning');
+          if (warning) warning.style.display = data[key] === 'beta' ? '' : 'none';
+        }
         if(key === "deviceName"){
           updateFieldsFromData({'deviceNamedisplay': data[key]});
           got_settings =true;
+        }
+        if (key === "showSetupWizard") {
+          const btn = document.getElementById("setupWizardBtn");
+          if (btn) {
+            btn.style.display = data[key] ? "inline-block" : "none";
+          }
         }
     });
 }
@@ -289,7 +519,7 @@ function initWebSocket() {
     const wsProtocol = (location.protocol === "https:") ? "wss://" : "ws://";
     const wsUri = wsProtocol + location.host + "/ws";
 
-    //ws = new WebSocket('ws://192.168.178.67/ws');
+    //ws = new WebSocket('ws://192.168.178.57/ws');
     ws = new WebSocket(wsUri);
 
 
@@ -326,10 +556,39 @@ function initWebSocket() {
       }
 
     const data = JSON.parse(event.data);
-    //console.log(data)
+    console.log(data)
 
     if(data.error){
+      const scanBtn = document.getElementById("wifiScanBtn");
+      if (scanBtn) {
+        scanBtn.disabled = false;
+        scanBtn.textContent = "Scan WiFi";
+      }
       showError(data.error);
+    }
+    else if (data.wifi_scan && Array.isArray(data.wifi_scan)) {
+      const scanBtn = document.getElementById("wifiScanBtn");
+      const select = document.getElementById("wifiScanResults");
+      if (scanBtn) {
+        scanBtn.disabled = false;
+        scanBtn.textContent = "Scan WiFi";
+      }
+      if (select) {
+        const previous = select.value;
+        select.innerHTML = '<option value="">-- Select network --</option>';
+        select.style.display = '';
+        data.wifi_scan.forEach(net => {
+          const opt = document.createElement("option");
+          opt.value = net.ssid || "";
+          const lock = net.open ? "" : " 🔒";
+          const rssi = (net.rssi !== undefined && net.rssi !== null) ? ` (${net.rssi} dBm)` : "";
+          opt.textContent = `${net.ssid || "<hidden>"}${lock}${rssi}`;
+          select.appendChild(opt);
+        });
+        if (previous) {
+          select.value = previous;
+        }
+      }
     }
     else if (data.weather && Array.isArray(data.weather)) {
       data.weather.forEach(station => {
@@ -358,6 +617,18 @@ function initWebSocket() {
               "id", "name","dist", "temp", "windDir", "windSpd", "gust",
               "humidity", "pressure", "soc", "rssi", "lastSeen" //  "lat", "lon", 
           ]);
+
+          // Set up click handler on ID cell for hw_status expand/collapse
+          const row = weatherStations.get(rowData.id);
+          if (row && !row.dataset.hwExpandSetup) {
+            row.dataset.hwExpandSetup = '1';
+            const idCell = row.querySelector('[data-key="id"]');
+            if (idCell) {
+              idCell.classList.add('hw-expandable');
+              idCell.title = 'Click to show/hide HW info';
+              idCell.addEventListener('click', () => toggleHwInfoRow(rowData.id, row));
+            }
+          }
       }); // {"weather":[{"vid":189,"fanet_id":50097,"name":"","rssi":-103,"snr":-9,"lat":47.74839,"lon":12.25035,"tLastMsg":1760421160,"temp":2,"wHeading":237.6563,"wSpeed":4.4,"wGust":8.6,"humidity":99.2,"baro":1028,"charge":93.33334}]}
 
     } else if (data.tracking && Array.isArray(data.tracking)) {
@@ -385,6 +656,30 @@ function initWebSocket() {
           upsertRow("trackingTable", rowData, liveTracking, [
               "id", "name", "acft", "state", "dist", "alt", "spd", "climb", "heading", "rssi", "lastSeen" // "lat", "lon",
           ]);
+      });
+    }
+    else if (data.hwinfo && Array.isArray(data.hwinfo)) {
+      data.hwinfo.forEach(hi => {
+        const stationId = hi.vid.toString(16).toUpperCase().padStart(2, "0") +
+                          hi.fanet_id.toString(16).toUpperCase().padStart(4, "0");
+        const decoded = decodeHwInfoDebug(hi.rawBytes || []);
+        // Merge: keep latest value of each field across decode types
+        const prev = stationHwInfo.get(stationId);
+        const merged = Object.assign({}, prev ? prev.merged : {}, decoded);
+        stationHwInfo.set(stationId, { raw: hi, merged });
+
+        // Update open detail row if visible
+        const dataRow = weatherStations.get(stationId);
+        if (dataRow) {
+          const detailRow = dataRow.nextElementSibling;
+          if (detailRow && detailRow.classList.contains('hwinfo-row') && detailRow.style.display !== 'none') {
+            const td = detailRow.querySelector('td');
+            if (td) td.innerHTML = buildHwInfoHtml(hi, merged);
+          }
+          // Mark ID cell with indicator that hw info is available
+          const idCell = dataRow.querySelector('[data-key="id"]');
+          if (idCell) idCell.classList.add('hw-has-data');
+        }
       });
     }
     // update static info

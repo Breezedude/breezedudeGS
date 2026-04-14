@@ -27,3 +27,14 @@ size_t getLittleFSPartitionSize() {
     }
 }
 
+// calculates distance in km between two lat/lon points using the Haversine formula
+int distance(float lat1, float lon1, float lat2, float lon2){
+  // Haversine formula
+  const double R = 6371; // Earth radius in km
+  double dLat = radians(lat2 - lat1);
+  double dLon = radians(lon2 - lon1);
+  double a = sin(dLat/2) * sin(dLat/2) + cos(radians(lat1)) * cos(radians(lat2)) * sin(dLon/2) * sin(dLon/2);
+  double c = 2 * atan2(sqrt(a), sqrt(1-a));
+  return R * c;
+}
+

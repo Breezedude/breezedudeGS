@@ -16,6 +16,7 @@
 #include "types.h"
 #include "ws.h"
 #include "aprs.h"
+//#include "improv_serial.h"
 
 #define SPIFFS LittleFS
 
@@ -42,11 +43,30 @@
 #define PIN_LED 35
 #define PIN_USERBTN 0
 
-String fw_version = "0.5.0";
+String fw_version = "0.6.0";
+bool update_available = false;
+String update_available_version = "";
+bool force_update_check = false;
+uint32_t last_updatecheck = 0;
 
 // for automatic updates, echeckt on connect and every 6 hours
-esp32FOTA esp32FOTA("bd-gs-stable", fw_version, false, true);
+esp32FOTA fotaStable("bd-gs-stable", fw_version, false, true);
+esp32FOTA fotaBeta("bd-gs-beta", fw_version, false, true);
+esp32FOTA* activeFota = &fotaStable;
 const char* manifest_url = "https://install.breezedude.de/gs-update.json";
+
+const char* getFotaBranchName() {
+  return (strcmp(settings.updateBranch, "beta") == 0) ? "bd-gs-beta" : "bd-gs-stable";
+}
+
+void applyFotaBranch() {
+  activeFota = (strcmp(settings.updateBranch, "beta") == 0) ? &fotaBeta : &fotaStable;
+}
+
+void onUpdateBranchChanged() {
+  applyFotaBranch();
+  force_update_check = true;
+}
 
 SX1262 radio_sx1262 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_BUSY);
 PhysicalLayer* radio_phy = nullptr;
@@ -62,6 +82,7 @@ const long  gmtOffset_sec = 0;
 const int   daylightOffset_sec = 3600;
 
 String breezedudeUrl = "http://fanet.breezedude.de/submit_weather";
+String breezedudeHwInfoUrl = "http://fanet.breezedude.de/submit_hwinfo";
 Preferences preferences;
 
 Settings settings;
@@ -91,6 +112,26 @@ void webconsole_print(String in){
     //Serial.println(text);
   }
 }
+
+  String getDeviceName(uint8_t vid, uint16_t fanet_id) {
+    for (int i = 0; i < MAX_DEVICES; i++) {
+      if (weatherStore[i].timestamp != 0 &&
+        weatherStore[i].vid == vid &&
+        weatherStore[i].fanet_id == fanet_id) {
+        return weatherStore[i].name;
+      }
+    }
+
+    for (int i = 0; i < MAX_DEVICES; i++) {
+      if (trackingStore[i].timestamp != 0 &&
+        trackingStore[i].vid == vid &&
+        trackingStore[i].fanet_id == fanet_id) {
+        return trackingStore[i].name;
+      }
+    }
+
+    return "";
+  }
 
 void setDeviceName(uint8_t vid, uint16_t fanet_id, String name) {
     for (int i = 0; i < MAX_DEVICES; i++) {
@@ -153,15 +194,19 @@ void handle_fanet(){
         if (millis() - weatherStore[i].last_send > 3000){ // filter forwareded duplicates
           weatherStore[i].last_send = millis()+2;
           ws.textAll(packWeather(&weatherStore[i]));
-          if(wifiConnected && settings.sendBreezedude){
-            send_wd_to_breezedude(&weatherStore[i]);
-          }
-          if(settings.sendAPRS && aprs.connected()){
-            if(!aprs.sendWeatherData(&wd)){
-              Serial.println(F("APRS submit weather failed"));
+
+          // check if distance is withing 300km
+          if(distance(settings.latitude, settings.longitude, weatherStore[i].lat, weatherStore[i].lon) < 300){
+            if(wifiConnected && settings.sendBreezedude){
+              send_wd_to_frontend(&weatherStore[i]);
             }
-          } else {
-            Serial.println(F("APRS not connected"));
+            if(settings.sendAPRS && aprs.connected()){
+              if(!aprs.sendWeatherData(&wd)){
+                Serial.println(F("APRS submit weather failed"));
+              }
+            } else {
+              Serial.println(F("APRS not connected"));
+            }
           }
         }
       }
@@ -174,6 +219,30 @@ void handle_fanet(){
       setDeviceName(header->vendor, header->address, name);
       if(settings.sendAPRS && aprs.connected()){
         aprs.sendNameData(FANET2String(header->vendor, header->address),name,radio_phy->getSNR());
+      }
+    }
+    else if(header->type == FANET_PCK_TYPE_HW_INFO){
+      hwInfoData hi;
+
+      /*
+      // Print raw hex to webconsole
+      String rxHex;
+      rxHex.reserve(numBytes * 3 + 16);
+      rxHex = "HWINFO RX: ";
+      char hexByte[4];
+      for (int i = 0; i < numBytes; i++) {
+        snprintf(hexByte, sizeof(hexByte), "%02X ", byteArr[i]);
+        rxHex += hexByte;
+      }
+      webconsole_print(rxHex);
+      */
+
+      if(unpack_hwinfo_t0a(byteArr, numBytes, &hi, radio_phy->getRSSI(), radio_phy->getSNR())){
+        int hiIdx = storeHwInfoData(hi);
+        ws.textAll(packHwInfo(&hwInfoStore[hiIdx]));
+        if(wifiConnected && settings.sendBreezedude){
+          send_hwinfo_to_frontend(&hi);
+        }
       }
     }
     else if(header->type == FANET_PCK_TYPE_TRACKING){
@@ -277,20 +346,24 @@ void server_setup(){
 }
 
 void check_update(){
-  static uint32_t last_updatecheck = 0;
-  if(settings.autoUpdate){
-    if( (last_updatecheck == 0) || (millis() - last_updatecheck > 6*3600*1000)){
-      last_updatecheck = millis();
-      bool updatedNeeded = esp32FOTA.execHTTPcheck();
-      if (updatedNeeded){
+  if (force_update_check || (last_updatecheck == 0) || (millis() - last_updatecheck > 6*3600*1000)){
+    force_update_check = false;
+    last_updatecheck = millis();
+    bool updatedNeeded = activeFota->execHTTPcheck();
+    char buff[16];
+    memset(buff,'\0', sizeof(buff));
+    activeFota->getPayloadVersion(buff);
+    update_available_version = String(buff);
+    update_available = updatedNeeded;
+    if (updatedNeeded){
+      if (settings.autoUpdate) {
         Serial.println("Installing update over internet");
-        esp32FOTA.execOTA();
+        activeFota->execOTA();
       } else {
-        char buff[10];
-        memset(buff,'\0', 10);
-        esp32FOTA.getPayloadVersion(buff);
-        Serial.printf("Firmware Current Version: %s, Online Version %s", fw_version, buff);
+        Serial.printf("Update available: current %s, online %s", fw_version, buff);
       }
+    } else {
+      Serial.printf("Firmware Current Version: %s, Online Version %s", fw_version, buff);
     }
   }
 }
@@ -379,6 +452,7 @@ if(!server_started){
     server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
     server_setup();
     server.begin();
+    ws_init(&ws);
     server_started = true;
 }
     // If STA connection fails and AP fallback is needed, it is already handled above with AP+STA mode
@@ -388,6 +462,11 @@ void load_preferences(){
   preferences.begin("gs_config", true);
   if (preferences.isKey("Settings")) {
     size_t loaded = preferences.getBytes("Settings", &settings, sizeof(settings));
+    settings.updateBranch[sizeof(settings.updateBranch) - 1] = '\0';
+    if (strcmp(settings.updateBranch, "stable") != 0 && strcmp(settings.updateBranch, "beta") != 0) {
+      strncpy(settings.updateBranch, "stable", sizeof(settings.updateBranch));
+      settings.updateBranch[sizeof(settings.updateBranch) - 1] = '\0';
+    }
   }
   preferences.end();
 }
@@ -419,8 +498,13 @@ void setup() {
       load_preferences();
     }
 
-    esp32FOTA.setManifestURL( manifest_url );
-    esp32FOTA.printConfig();
+    fotaStable.setManifestURL(manifest_url);
+    fotaBeta.setManifestURL(manifest_url);
+    applyFotaBranch();
+    activeFota->printConfig();
+
+    // Initialize Improv Serial for WiFi provisioning
+    //improv_begin(fw_version, "BreezedudeGS");
 
     // init buffers
     for (int i = 0; i < MAX_DEVICES; i++) {
@@ -462,17 +546,19 @@ void handle_dummy(){
     weatherStore[i].name = "Test Station (420m)";
     ws.textAll(packWeather(&weatherStore[i]));
     if(wifiConnected && settings.sendBreezedude){
-      send_wd_to_breezedude(&weatherStore[i]);
+      send_wd_to_frontend(&weatherStore[i]);
     }
   }
 }
 
 
 uint32_t lastCall = 0;
- 
+
 void loop() {
   dnsServer.processNextRequest();
+  //improv_handle();
 
+  wifi_scan_tick();
   run_wifi();
 
   if(millis() - lastCall > 5000){

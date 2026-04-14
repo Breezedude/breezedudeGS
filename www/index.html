@@ -61,14 +61,19 @@
 
   <script src="app.js"></script>
 
+  <div class="page-shell">
+
   <!-- Top Bar with Title and WS Status -->
-  <div style="display: flex; justify-content: space-between; align-items: center;">
-    <div>
+  <div class="page-header">
+    <div class="title-block">
+      <img class="app-logo" src="icon_512x512.png" alt="Breezedude logo">
+      <div>
       <!-- Main Title -->
       <h1>Breezedude Groundstation</h1>
       <h2 id="deviceNamedisplay">Loading...</h2>
+      </div>
     </div>
-    <div style="text-align: right; padding: 10px;">
+    <div class="status-panel">
       <div id="wsStatus" style="font-size: 0.9em; color: green;">Connecting...</div>
       <div id="wsError" style="font-size: 0.8em; color: red;"></div>
       <div id="msg" style="font-size: 0.8em;"></div>
@@ -79,24 +84,56 @@
 <div class="section">
   <div class="section-header" onclick="toggleSection(this)">WiFi</div>
   <div id="div_wifi" class="section-content">
-    <label>Connect to SSID:</label>
-    <input type="text" id="sta_ssid" name="sta_ssid" placeholder="STA SSID" oninput="validateMaxLength(this)">
-    <small id="sta_ssid_error" style="color:red; display:none;">Max. length is 64 characters<br></small>
-    <label>Password:</label>
-    <input type="text" id="sta_password" name="sta_password" placeholder="Password" oninput="validateMaxLength(this)">
-    <small id="sta_password_error" style="color:red; display:none;">Max. length is 64 characters<br></small>
-    <hr>
-    <label>AP SSID:</label>
-    <input type="text" id="ap_ssid" name="ap_ssid" placeholder="Access Point SSID" oninput="validateMaxLength(this)">
-    <small id="ap_ssid_error" style="color:red; display:none;">Max. length is 64 characters<br></small>
-    <label>AP Password:</label>
-    <input type="text" id="ap_password" name="ap_password" placeholder="Access Point Password" oninput="validateMaxLength(this)">
-    <small id="ap_password_error" style="color:red; display:none;">Max. length is 64 characters<br></small>
+    <div class="form-grid">
 
-    <label class="checkbox-label">
-      <input type="checkbox" id="keepAP" name="keepAP"> Keep AP running
-    </label>
+      <div class="form-card form-card--full">
+        <div class="wifi-scan-row">
+          <span class="wifi-scan-hint">Type manually or</span>
+          <button id="wifiScanBtn" onclick="scanWiFi()">Scan WiFi</button>
+          <select id="wifiScanResults" onchange="applySelectedWiFi()" style="display:none">
+          </select>
+        </div>
+      </div>
 
+      <div class="form-card">
+        <span class="info-label">WiFi Network</span>
+        <input type="text" id="sta_ssid" name="sta_ssid" placeholder="STA SSID" oninput="validateMaxLength(this)">
+        <small id="sta_ssid_error" style="color:red; display:none;">Max. length is 64 characters</small>
+      </div>
+
+      <div class="form-card">
+        <span class="info-label">Password</span>
+        <div class="password-row">
+          <input type="password" id="sta_password" name="sta_password" placeholder="Password" oninput="validateMaxLength(this)">
+          <button type="button" class="pw-toggle" aria-label="Passwort anzeigen" title="Passwort anzeigen" onclick="togglePasswordVisibility('sta_password', this)"><span class="eye-glyph" aria-hidden="true">👁</span></button>
+        </div>
+        <small id="sta_password_error" style="color:red; display:none;">Max. length is 64 characters</small>
+      </div>
+
+      <div class="form-section-divider">Access Point</div>
+
+      <div class="form-card">
+        <span class="info-label">Hotspot Name</span>
+        <input type="text" id="ap_ssid" name="ap_ssid" placeholder="Access Point SSID" oninput="validateMaxLength(this)">
+        <small id="ap_ssid_error" style="color:red; display:none;">Max. length is 64 characters</small>
+      </div>
+
+      <div class="form-card">
+        <span class="info-label">AP Password</span>
+        <div class="password-row">
+          <input type="password" id="ap_password" name="ap_password" placeholder="Access Point Password" oninput="validateMaxLength(this)">
+          <button type="button" class="pw-toggle" aria-label="Passwort anzeigen" title="Passwort anzeigen" onclick="togglePasswordVisibility('ap_password', this)"><span class="eye-glyph" aria-hidden="true">👁</span></button>
+        </div>
+        <small id="ap_password_error" style="color:red; display:none;">Max. length is 64 characters</small>
+      </div>
+
+      <div class="form-card form-card--full">
+        <label class="checkbox-label">
+          <input type="checkbox" id="keepAP" name="keepAP"> Keep the Access Point active even when connected to the WiFi network
+        </label>
+      </div>
+
+    </div>
     <button onclick="saveWiFi()">Save WiFi Settings</button>
   </div>
 </div>
@@ -105,41 +142,71 @@
 <div class="section">
   <div class="section-header" onclick="toggleSection(this)">Settings</div>
   <div id="div_settings" class="section-content">
-    <label>Device Name:</label>
-    <input type="text" id="deviceName" name="deviceName" placeholder="Name">
-    <small id="deviceNameError" style="color:red; display:none;">Invalid device name. Length 3-9 characters, chars and numbers only (A-Z, a-z and 0-9)<br></small>
+    <div class="form-grid">
 
-    <label>Longitude:</label>
-    <input type="number" step="any" id="lon" name="lon" placeholder="Longitude">
+      <div class="form-card form-card--full">
+        <span class="info-label">Device Name</span>
+        <input type="text" id="deviceName" name="deviceName" placeholder="Name">
+        <small id="deviceNameError" style="color:red; display:none;">Invalid device name. Length 3-9 characters, chars and numbers only (A-Z, a-z and 0-9)</small>
+      </div>
 
-    <label>Latitude:</label>
-    <input type="number" step="any" id="lat" name="lat" placeholder="Latitude">
-    <!-- <button id="getLocationBtn">Get current Location</button> <span id="location_set"></span> <br><br> -->
+      <div class="form-card">
+        <span class="info-label">Longitude</span>
+        <input type="number" step="any" id="lon" name="lon" placeholder="Longitude">
+      </div>
 
-    <label>Elevation:</label>
-    <input type="number" step="any" id="elevation" name="elevation" placeholder="Elevation (MSL)">
+      <div class="form-card">
+        <span class="info-label">Latitude</span>
+        <input type="number" step="any" id="lat" name="lat" placeholder="Latitude">
+      </div>
 
-    <label class="checkbox-label">
-      <input type="checkbox" id="sendAPRS" name="sendAPRS" onchange="toggleAPRSInputs()"> Send data to APRS server (e.g. OGN)
-    </label>
+      <div class="form-card form-card--full">
+        <span class="info-label">Elevation (MSL)</span>
+        <input type="number" step="any" id="elevation" name="elevation" placeholder="Elevation (MSL)">
+      </div>
 
-    <div id="aprsInputs" style="margin-left: 20px;">
-      <label>APRS Server:</label>
-      <input type="text" id="aprsServer" name="aprsServer" placeholder="APRS Server">
+      <div class="form-card form-card--full">
+        <label class="checkbox-label">
+          <input type="checkbox" id="sendAPRS" name="sendAPRS" onchange="toggleAPRSInputs()"> Send data to APRS server (e.g. OGN)
+        </label>
+        <div id="aprsInputs" style="display:flex; flex-direction:column; gap:6px; margin-top:6px; margin-left:22px;">
+          <div>
+            <span class="info-label">APRS Server</span>
+            <input type="text" id="aprsServer" name="aprsServer" placeholder="APRS Server">
+          </div>
+          <div>
+            <span class="info-label">APRS Port</span>
+            <input type="number" id="aprsPort" name="aprsPort" placeholder="APRS Port">
+          </div>
+        </div>
+      </div>
 
-      <label>APRS Port:</label>
-      <input type="number" id="aprsPort" name="aprsPort" placeholder="APRS Port">
+      <div class="form-card form-card--full">
+        <label class="checkbox-label">
+          <input type="checkbox" id="sendBreezedude" name="sendBreezedude"> <div class="tooltip">Send FANET data to Breezedude <span class="tooltiptext">This is required for detailed information such as battery charge</span></div>
+        </label>
+      </div>
+
+      <div class="form-section-divider">Firmware Updates</div>
+
+      <div class="form-card">
+        <label class="checkbox-label">
+          <input type="checkbox" id="autoUpdate" name="autoUpdate"> <div class="tooltip">Automatic updates<span class="tooltiptext">Automatically update firmware over internet when new release is avaliable</span></div>
+        </label>
+      </div>
+
+      <div class="form-card">
+        <span class="info-label">Update Branch</span>
+        <select id="updateBranch" name="updateBranch" onchange="document.getElementById('betaWarning').style.display = this.value === 'beta' ? '' : 'none'">
+          <option value="stable">stable</option>
+          <option value="beta">beta</option>
+        </select>
+        <small id="betaWarning" style="display:none; color: var(--muted-text);">⚠ Beta branch may contain experimental features and bugs which may lead to unavailability and manual intervention. Use with caution.</small>
+      </div>
+
     </div>
-
-    <label class="checkbox-label">
-      <input type="checkbox" id="sendBreezedude" name="sendBreezedude"> <div class="tooltip">Send FANET data to Breezedude <span class="tooltiptext">This is required for detailed information such as battery charge</span></div>
-    </label>
-
-    <label class="checkbox-label">
-      <input type="checkbox" id="autoUpdate" name="autoUpdate"> <div class="tooltip">Automatic firmware updates<span class="tooltiptext">Automatically update firmware over internet when new release is avaliable</span></div>
-    </label>
-
     <button id="saveSettingsBtn" onclick="saveSettings()">Save Settings</button>
+    <button id="setupWizardBtn" style="display:none" onclick="startSetupWizard()">Einrichtungsassistent</button>
   </div>
 </div>
 
@@ -147,15 +214,57 @@
 <div class="section">
   <div class="section-header" onclick="toggleSection(this)">Info</div>
   <div class="section-content">
-    <p>Version: <span id="version">-</span></p>
-    <p>Compile Time: <span id="compileTime">-</span></p>
-    <p>Uptime: <span id="uptime">-</span></p>
-    <p>Free Heap: <span id="freeHeap">-</span></p>
-    <p>WiFi Status: <span id="sta_status">-</span></p>
-    <p>WiFi IP: <span id="sta_ip">-</span></p>
-    <p>WiFi RSSI: <span id="sta_rssi">-</span></p>
-    <p>APRS Status: <span id="aprs_status">-</span></p>
-    <p>FANET Packets: <span id="fanet_rx">-</span></p>
+    <div class="info-grid">
+
+      <div class="info-card">
+        <span class="info-label">Firmware Version</span>
+        <span class="info-value">
+          <span id="version">-</span>
+          <a id="update_link" href="https://github.com/Breezedude/breezedudeGS/releases/latest" target="_blank" rel="noopener" style="display:none"><span id="update_notice"></span></a>
+        </span>
+      </div>
+
+      <div class="info-card">
+        <span class="info-label">Build Time</span>
+        <span class="info-value" id="compileTime">-</span>
+      </div>
+
+      <div class="info-card">
+        <span class="info-label">Uptime</span>
+        <span class="info-value" id="uptime">-</span>
+      </div>
+
+      <div class="info-card">
+        <span class="info-label">WiFi</span>
+        <span class="info-value" id="sta_status">-</span>
+      </div>
+
+      <div class="info-card">
+        <span class="info-label">IP Address</span>
+        <span class="info-value" id="sta_ip">-</span>
+      </div>
+
+      <div class="info-card">
+        <span class="info-label">WiFi RSSI</span>
+        <span class="info-value" id="sta_rssi">-</span>
+      </div>
+
+      <div class="info-card">
+        <span class="info-label">Internet Access</span>
+        <span class="info-value" id="internet_connection">-</span>
+      </div>
+
+      <div class="info-card">
+        <span class="info-label">APRS</span>
+        <span class="info-value" id="aprs_status">-</span>
+      </div>
+
+      <div class="info-card">
+        <span class="info-label">FANET Packets RX</span>
+        <span class="info-value" id="fanet_rx">-</span>
+      </div>
+
+    </div>
   </div>
 </div>
 
@@ -166,7 +275,7 @@
 
 
       <h3>Weather Stations</h3>
-      <table>
+      <table class="fanet-table">
         <thead>
           <tr>
             <th>ID</th><th>Name</th><th>Dist</th>
@@ -179,7 +288,7 @@
       </table>
 
       <h3>Live Tracking</h3>
-      <table>
+      <table class="fanet-table">
         <thead>
           <tr>
             <th>ID</th><th>Name</th><th>Type</th><th>State</th>
@@ -199,25 +308,26 @@
 <div class="section">
   <div class="section-header" onclick="toggleSection(this)">Tools</div>
   <div class="section-content">
-    <button id="reboot" onclick="sendReboot()">Reboot</button> <br>
+    <button id="reboot" onclick="sendReboot()">↺ Reboot</button> <br>
     <hr>
 
     <input type="file" id="fwfile" style="display:none"  accept=".bin"  onchange="uploadFirmware()">
-    <button onclick="document.getElementById('fwfile').click()">Software Update</button> <br>
+    <button onclick="document.getElementById('fwfile').click()">🗸 Software Update</button> <br>
     <div id="otaStatus" style="font-size: 0.8em;"></div>
     <hr>
-    <button onclick="downloadUserData()">Export Config</button><br>
+    <button onclick="downloadUserData()">🖫 Export Config</button><br>
     <input id='restore_config' type="file" accept="application/json" style="display:none" onchange="importUserData(event)">
-    <button id='import_config' onclick="document.getElementById('restore_config').click()">Import Config</button>
+    <button id='import_config' onclick="document.getElementById('restore_config').click()">🗁 Import Config</button>
     <button id="btn_save_all" style="display:none" onclick="save_all()">Save</button>
     <span id="import_status"></span>
     <hr>
     <h4>APRS Console</h4>
-    <button id="clearButton">Clear</button>
+    <button id="clearButton">🪠 Clear</button>
     <textarea class="console" id="webconsole" rows="20" readonly></textarea>
     
   </div>
 </div>
   <p id="status"></p>
+  </div>
 </body>
 </html>

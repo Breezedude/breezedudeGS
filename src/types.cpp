@@ -2,6 +2,7 @@
 
 weatherData weatherStore[MAX_DEVICES];
 trackingData trackingStore[MAX_DEVICES];
+hwInfoData hwInfoStore[MAX_DEVICES];
 
 int storeWeatherData(const weatherData& newData) {
     return storeFanetData(weatherStore, MAX_DEVICES, newData);
@@ -9,6 +10,10 @@ int storeWeatherData(const weatherData& newData) {
 
 int storeTrackingData(const trackingData& newData) {
     return storeFanetData(trackingStore, MAX_DEVICES, newData);
+}
+
+int storeHwInfoData(const hwInfoData& newData) {
+    return storeFanetData(hwInfoStore, MAX_DEVICES, newData);
 }
 
 
@@ -255,6 +260,115 @@ bool unpack_ground_trackingdata(uint8_t *buffer, trackingData *data, int rssi, i
     data->aircraftType = acft_Other;
     data->speed =0;
     data->alt =0;
+    return true;
+}
+
+bool unpack_hwinfo_t0a(const uint8_t *buffer, size_t len, hwInfoData *data, int rssi, int snr) {
+    if (buffer == nullptr || data == nullptr || len < (sizeof(fanet_header) + 1)) {
+        return false;
+    }
+
+    const fanet_header *header = (const fanet_header *)buffer;
+
+    // 0A BD 40 1C 50 01 81 0E 00 00 01 FB 0E 2C 02 E4 0C
+
+    data->vid = header->vendor;
+    data->fanet_id = header->address;
+    data->devId = FANET2String(data->vid, data->fanet_id);
+    data->rssi = rssi;
+    data->snr = snr;
+    data->timestamp = time(nullptr);
+
+    size_t idx = sizeof(fanet_header);
+    data->subHeader = buffer[idx++];
+
+    data->pingPongRequest = (data->subHeader & 0x80) != 0;
+    data->hasSubtypeBuildDate = (data->subHeader & 0x40) != 0;
+    data->hasIcaoAddress = (data->subHeader & 0x20) != 0;
+    data->hasUptime = (data->subHeader & 0x10) != 0;
+    data->hasRxRssi = (data->subHeader & 0x08) != 0;
+    data->hasExtendedHeader = (data->subHeader & 0x01) != 0;
+
+    data->deviceType = 0;
+    data->isDevelopmentBuild = false;
+    data->buildYear = 0;
+    data->buildMonth = 0;
+    data->buildDay = 0;
+    data->icaoAddress = 0;
+    data->uptimeMinutes = 0;
+    data->rxRssiDbm = 0;
+    data->rxRssiSourceVendor = 0;
+    data->rxRssiSourceAddress = 0;
+    data->extHeader = 0;
+
+    memset(data->rawAfterBuildDate, 0, sizeof(data->rawAfterBuildDate));
+    data->rawLen = 0;
+
+    // Byte 1..3 are mandatory according to spec when bit 6 is set.
+    if (data->hasSubtypeBuildDate) {
+        if (len < (idx + 3)) {
+            return false;
+        }
+        data->deviceType = buffer[idx++];
+
+        uint16_t buildRaw = (uint16_t)buffer[idx] | ((uint16_t)buffer[idx + 1] << 8);
+        idx += 2;
+
+        data->isDevelopmentBuild = ((buildRaw >> 15) & 0x01) != 0;
+        data->buildYear = 2019 + ((buildRaw >> 9) & 0x3F);
+        data->buildMonth = (buildRaw >> 5) & 0x0F;
+        data->buildDay = buildRaw & 0x1F;
+    }
+
+    if (data->hasIcaoAddress) {
+        if (len < (idx + 3)) {
+            return false;
+        }
+        data->icaoAddress = (uint32_t)buffer[idx] |
+                            ((uint32_t)buffer[idx + 1] << 8) |
+                            ((uint32_t)buffer[idx + 2] << 16);
+        idx += 3;
+    }
+
+    if (data->hasUptime) {
+        if (len < (idx + 2)) {
+            return false;
+        }
+        data->uptimeMinutes = (uint16_t)buffer[idx] | ((uint16_t)buffer[idx + 1] << 8);
+        idx += 2;
+    }
+
+    if (data->hasRxRssi) {
+        if (len < (idx + 4)) {
+            return false;
+        }
+        data->rxRssiDbm = (int8_t)buffer[idx] - 50;
+        idx += 1;
+        data->rxRssiSourceVendor = buffer[idx++];
+        data->rxRssiSourceAddress = (uint16_t)buffer[idx] | ((uint16_t)buffer[idx + 1] << 8);
+        idx += 2;
+    }
+
+    if (data->hasExtendedHeader) {
+        if (len < (idx + 1)) {
+            return false;
+        }
+        data->extHeader = buffer[idx++];
+    }
+    
+    // Keep all bytes after firmware build date for raw passthrough (max 20 bytes).
+    size_t rawStart = idx;
+
+    if (len > rawStart) {
+        size_t rawAvailable = len - rawStart;
+        size_t copyLen = rawAvailable;
+        if (copyLen > FANET_HWINFO_RAW_MAX) {
+            copyLen = FANET_HWINFO_RAW_MAX;
+        }
+        memcpy(data->rawAfterBuildDate, &buffer[rawStart], copyLen);
+        data->rawLen = (uint8_t)copyLen;
+    }
+
     return true;
 }
 

@@ -18,6 +18,7 @@ struct Settings {
   bool keepAP;
   bool sendBreezedude;
   bool autoUpdate;
+  char updateBranch[8];
 
   Settings() {
    strncpy(wifi_ssid, DEFAULT_STA_SSID, sizeof(wifi_ssid));
@@ -33,6 +34,7 @@ struct Settings {
    keepAP = true;
    sendBreezedude = true;
    autoUpdate = true;
+     strncpy(updateBranch, "stable", sizeof(updateBranch));
  }
 };
 
@@ -55,7 +57,7 @@ typedef enum trck_state_ {
 
   
 
-const String trck_state_names [16] = {"Other","Walking","Vehicle","Bike","Boot","Need a ride","Landed well","Need technical support","Need medical help","Distress call","Distress call automatically","Flying"};
+const String trck_state_names [17] = {"Other","Walking","Vehicle","Bike","Boot","5", "6","7","Need a ride","Landed well","10", "11","Need technical support","Need medical help","Distress call","Distress call automatically","Flying"};
 
 typedef enum trck_acft_type_ {
     acft_Other = 0,
@@ -166,7 +168,8 @@ struct trackingData : public FanetBase<trackingData> {
     FANET_PCK_TYPE_TRACKING = 0x01,
     FANET_PCK_TYPE_NAME = 0x02,
     FANET_PCK_TYPE_WEATHER = 0x04,
-    FANET_PCK_TYPE_GROUND_TRACKING = 0x07
+     FANET_PCK_TYPE_GROUND_TRACKING = 0x07,
+     FANET_PCK_TYPE_HW_INFO = 0x0A
   };
 
 typedef struct {
@@ -256,16 +259,71 @@ typedef struct {
     unsigned int charge        :8;
   } __attribute__((packed)) fanet_packet_t4;
 
+#define FANET_HWINFO_RAW_MAX 20
+
+struct hwInfoData : public FanetBase<hwInfoData> {
+        uint8_t subHeader;
+        bool pingPongRequest;
+        bool hasSubtypeBuildDate;
+        bool hasIcaoAddress;
+        bool hasUptime;
+        bool hasRxRssi;
+        bool hasExtendedHeader;
+
+        uint8_t deviceType;
+        bool isDevelopmentBuild;
+        uint16_t buildYear;
+        uint8_t buildMonth;
+        uint8_t buildDay;
+
+        uint32_t icaoAddress;
+        uint16_t uptimeMinutes;
+        int8_t rxRssiDbm;
+        uint8_t rxRssiSourceVendor;
+        uint16_t rxRssiSourceAddress;
+        uint8_t extHeader;
+
+        uint8_t rawLen;
+        uint8_t rawAfterBuildDate[FANET_HWINFO_RAW_MAX];
+
+        void assign(const hwInfoData& other) {
+            assignBase(other);
+            subHeader = other.subHeader;
+            pingPongRequest = other.pingPongRequest;
+            hasSubtypeBuildDate = other.hasSubtypeBuildDate;
+            hasIcaoAddress = other.hasIcaoAddress;
+            hasUptime = other.hasUptime;
+            hasRxRssi = other.hasRxRssi;
+            hasExtendedHeader = other.hasExtendedHeader;
+            deviceType = other.deviceType;
+            isDevelopmentBuild = other.isDevelopmentBuild;
+            buildYear = other.buildYear;
+            buildMonth = other.buildMonth;
+            buildDay = other.buildDay;
+            icaoAddress = other.icaoAddress;
+            uptimeMinutes = other.uptimeMinutes;
+            rxRssiDbm = other.rxRssiDbm;
+            rxRssiSourceVendor = other.rxRssiSourceVendor;
+            rxRssiSourceAddress = other.rxRssiSourceAddress;
+            extHeader = other.extHeader;
+            rawLen = other.rawLen;
+            memcpy(rawAfterBuildDate, other.rawAfterBuildDate, FANET_HWINFO_RAW_MAX);
+        }
+};
+
 String FANET2String(uint8_t vid, uint16_t fid);
 
 #define MAX_DEVICES 20
 extern weatherData weatherStore[MAX_DEVICES];
 extern trackingData trackingStore[MAX_DEVICES];
+extern hwInfoData hwInfoStore[MAX_DEVICES];
 
 void pack_weatherdata(weatherData *wData, uint8_t * buffer);
 bool unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rssi);
 bool unpack_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr);
 bool unpack_ground_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr);
+bool unpack_hwinfo_t0a(const uint8_t *buffer, size_t len, hwInfoData *data, int rssi, int snr);
+int storeHwInfoData(const hwInfoData& newData);
 void print_fanet_packet_t4(fanet_packet_t4 *pkt);
 void print_weatherData(weatherData *wData);
 void fill_weatherData_dummy(weatherData *wData);
