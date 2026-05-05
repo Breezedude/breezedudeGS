@@ -16,6 +16,8 @@
 #include "types.h"
 #include "ws.h"
 #include "aprs.h"
+#include "ota_gs.h"
+#include "config_gs.h"
 //#include "improv_serial.h"
 
 #define SPIFFS LittleFS
@@ -43,7 +45,7 @@
 #define PIN_LED 35
 #define PIN_USERBTN 0
 
-String fw_version = "0.6.0";
+String fw_version = "0.6.2";
 bool update_available = false;
 String update_available_version = "";
 bool force_update_check = false;
@@ -53,7 +55,7 @@ uint32_t last_updatecheck = 0;
 esp32FOTA fotaStable("bd-gs-stable", fw_version, false, true);
 esp32FOTA fotaBeta("bd-gs-beta", fw_version, false, true);
 esp32FOTA* activeFota = &fotaStable;
-const char* manifest_url = "https://install.breezedude.de/gs-update.json";
+const char* manifest_url = "http://fanet.breezedude.de/api/ota/gs-manifest"; //old "https://install.breezedude.de/gs-update.json";
 
 const char* getFotaBranchName() {
   return (strcmp(settings.updateBranch, "beta") == 0) ? "bd-gs-beta" : "bd-gs-stable";
@@ -243,6 +245,7 @@ void handle_fanet(){
         if(wifiConnected && settings.sendBreezedude){
           send_hwinfo_to_frontend(&hi);
         }
+        ota_gs_try_update(hi);
       }
     }
     else if(header->type == FANET_PCK_TYPE_TRACKING){
@@ -345,6 +348,35 @@ void server_setup(){
     });
 }
 
+String normalize_online_version(const String& versionRaw) {
+  int firstDot = versionRaw.indexOf('.');
+  int secondDot = versionRaw.indexOf('.', firstDot + 1);
+  if (firstDot < 0 || secondDot < 0) {
+    return versionRaw;
+  }
+
+  String patch = versionRaw.substring(secondDot + 1);
+  if (patch.length() <= 1) {
+    return versionRaw;
+  }
+
+  for (size_t i = 0; i < patch.length(); i++) {
+    if (patch[i] < '0' || patch[i] > '9') {
+      return versionRaw;
+    }
+  }
+
+  // Some manifests append a 5-digit build marker to the patch (e.g. 0.6.215003).
+  if (patch.length() > 5) {
+    String normalizedPatch = patch.substring(0, patch.length() - 5);
+    if (normalizedPatch.length() > 0) {
+      return versionRaw.substring(0, secondDot + 1) + normalizedPatch;
+    }
+  }
+
+  return versionRaw;
+}
+
 void check_update(){
   if (force_update_check || (last_updatecheck == 0) || (millis() - last_updatecheck > 6*3600*1000)){
     force_update_check = false;
@@ -353,17 +385,19 @@ void check_update(){
     char buff[16];
     memset(buff,'\0', sizeof(buff));
     activeFota->getPayloadVersion(buff);
-    update_available_version = String(buff);
+    String onlineVersionRaw = String(buff);
+    String onlineVersionDisplay = normalize_online_version(onlineVersionRaw);
+    update_available_version = onlineVersionDisplay;
     update_available = updatedNeeded;
     if (updatedNeeded){
       if (settings.autoUpdate) {
         Serial.println("Installing update over internet");
         activeFota->execOTA();
       } else {
-        Serial.printf("Update available: current %s, online %s", fw_version, buff);
+        Serial.printf("Update available: current %s, online %s", fw_version, onlineVersionDisplay.c_str());
       }
     } else {
-      Serial.printf("Firmware Current Version: %s, Online Version %s", fw_version, buff);
+      Serial.printf("Firmware Current Version: %s, Online Version %s\r\n", fw_version, onlineVersionDisplay.c_str());
     }
   }
 }
@@ -533,6 +567,8 @@ void setup() {
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   setSyncProvider(getNtpTime);
   setSyncInterval(300);
+  config_gs_begin();
+  ota_gs_begin();
   update_aprs_settings();
 }
 
@@ -570,5 +606,7 @@ void loop() {
   //handle_dummy();
   if(settings.sendAPRS){
     aprs.run(wifiConnected);
+  
+  config_gs_poll_devices();
   }
 }

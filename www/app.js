@@ -25,33 +25,37 @@ function decodeHwInfoDebug(rawBytes) {
   if (!Array.isArray(rawBytes) || rawBytes.length === 0) return result;
   const bytes = rawBytes.map((v) => Number(v) & 0xFF);
   result.decode_type = bytes[0];
-  // decode_type 0x01: vbatt, batt_perc, pv_state, cfg flags, lbt_counter, rssi_threshold, version_bcd
-  if (result.decode_type === 0x01 && bytes.length >= 10) {
-    result.vbatt_mv             = bytes[1] | (bytes[2] << 8);
-    result.batt_perc            = bytes[3];
-    result.pv_state             = bytes[4];
-    const cfg                   = bytes[5];
-    result.sensor_type          = cfg & 0x1F;
-    result.sensor_type_text     = sensorTypeToName(result.sensor_type);
-    result.use_baro             = ((cfg >> 5) & 0x01) === 1;
-    result.uv_triggered         = ((cfg >> 6) & 0x01) === 1;
-    result.lbt                  = ((cfg >> 7) & 0x01) === 1;
-    result.lbt_counter          = bytes[6];
-    result.lora_rssi_threshold  = -bytes[7];
-    const vbcd                  = bytes[8] | (bytes[9] << 8);
-    result.version_bcd          = vbcd;
-    const vMajor                = (vbcd >> 8) & 0x0F;
-    const vMinor                = (vbcd >> 4) & 0x0F;
-    const vPatch                = vbcd & 0x0F;
-    result.version              = `${vMajor}.${vMinor}.${vPatch}`;
+
+  if (result.decode_type === 0x01 && bytes.length >= 11) {
+    result.vbatt_mv = bytes[1] | (bytes[2] << 8);
+    result.batt_perc = bytes[3];
+    result.pv_state = bytes[4];
+    result.rx_count = bytes[5] | (bytes[6] << 8);
+    result.forward_count = bytes[7] | (bytes[8] << 8);
+    result.lbt_counter = bytes[9];
   }
-  // decode_type 0x02: gust_age, wind_age, sensor_integ_s, reduce_interval_voltage
-  if (result.decode_type === 0x02 && bytes.length >= 7) {
-    result.gust_age                 = bytes[1] | (bytes[2] << 8);
-    result.wind_age                 = bytes[3] | (bytes[4] << 8);
-    result.sensor_integ_s           = bytes[5];
-    result.reduce_interval_voltage  = 2 + bytes[6] / 100.0;
+
+  if (result.decode_type === 0x02 && bytes.length >= 10) {
+    const vbcd = bytes[1] | (bytes[2] << 8);
+    result.version_bcd = vbcd;
+    result.version = `${(vbcd >> 8) & 0x0F}.${(vbcd >> 4) & 0x0F}.${vbcd & 0x0F}`;
+    result.nonce = (bytes[3]) | (bytes[4] << 8) | (bytes[5] << 16) | (bytes[6] << 24);
+    result.slot_capacity_kb = bytes[7] | (bytes[8] << 8);
+    result.ota_proto = bytes[9];
   }
+
+  if (result.decode_type === 0x03 && bytes.length >= 5) {
+    const cfg = bytes[1];
+    result.sensor_type = cfg & 0x1F;
+    result.sensor_type_text = sensorTypeToName(result.sensor_type);
+    result.use_baro = ((cfg >> 5) & 0x01) === 1;
+    result.uv_triggered = ((cfg >> 6) & 0x01) === 1;
+    result.lbt = ((cfg >> 7) & 0x01) === 1;
+    result.lora_rssi_threshold = -bytes[2];
+    result.sensor_integ_s = bytes[3];
+    result.reduce_interval_voltage = 2 + bytes[4] / 100.0;
+  }
+
   return result;
 }
 
@@ -67,14 +71,16 @@ function buildHwInfoHtml(hi, merged) {
   if (hi.hasUptime && hi.uptimeMinutes !== undefined) items += row('Uptime', hi.uptimeMinutes + ' min');
   if (merged.vbatt_mv !== undefined)      items += row('Battery', (merged.vbatt_mv / 1000).toFixed(2) + ' V (' + merged.batt_perc + '%)');
   if (merged.pv_state !== undefined)      items += row('PV State', merged.pv_state);
+  if (merged.rx_count !== undefined)      items += row('RX Count', merged.rx_count);
+  if (merged.forward_count !== undefined) items += row('Forward Count', merged.forward_count);
   if (merged.sensor_type_text !== undefined) items += row('Sensor Type', merged.sensor_type_text);
   else if (merged.sensor_type !== undefined) items += row('Sensor Type', merged.sensor_type);
   if (merged.lora_rssi_threshold !== undefined) items += row('LoRa RSSI Thr.', merged.lora_rssi_threshold + ' dBm');
-  if (merged.lbt !== undefined)           items += row('LBT', merged.lbt ? 'on (' + merged.lbt_counter + ')' : 'off');
-  if (merged.gust_age !== undefined)      items += row('Gust Age', merged.gust_age + ' s');
-  if (merged.wind_age !== undefined)      items += row('Wind Age', merged.wind_age + ' s');
+  if (merged.lbt !== undefined)           items += row('LBT', merged.lbt ? 'on (' + (merged.lbt_counter ?? 0) + ')' : 'off');
   if (merged.sensor_integ_s !== undefined) items += row('Sensor Integ.', merged.sensor_integ_s + ' s');
   if (merged.reduce_interval_voltage !== undefined) items += row('Reduce V', merged.reduce_interval_voltage.toFixed(2) + ' V');
+  if (merged.slot_capacity_kb !== undefined) items += row('OTA Slot', merged.slot_capacity_kb + ' KiB');
+  if (merged.ota_proto !== undefined)     items += row('OTA Proto', merged.ota_proto);
   return `<div class="hwinfo-grid">${items}</div>`;
 }
 
