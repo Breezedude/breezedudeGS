@@ -260,6 +260,8 @@ typedef struct {
   } __attribute__((packed)) fanet_packet_t4;
 
 #define FANET_HWINFO_RAW_MAX 20
+#define HWINFO_MAX_STATIONS 8
+#define HWINFO_HISTORY_PER_STATION 5
 
 struct hwInfoData : public FanetBase<hwInfoData> {
         uint8_t subHeader;
@@ -311,12 +313,23 @@ struct hwInfoData : public FanetBase<hwInfoData> {
         }
 };
 
+struct hwInfoStationHistory {
+    bool used;
+    uint8_t vid;
+    uint16_t fanet_id;
+    time_t newestTimestamp;
+    uint8_t head;
+    uint8_t count;
+    hwInfoData entries[HWINFO_HISTORY_PER_STATION];
+};
+
 String FANET2String(uint8_t vid, uint16_t fid);
 
 #define MAX_DEVICES 20
 extern weatherData weatherStore[MAX_DEVICES];
 extern trackingData trackingStore[MAX_DEVICES];
-extern hwInfoData hwInfoStore[MAX_DEVICES];
+extern hwInfoData hwInfoStore[HWINFO_MAX_STATIONS];
+extern hwInfoStationHistory hwInfoHistory[HWINFO_MAX_STATIONS];
 
 void pack_weatherdata(weatherData *wData, uint8_t * buffer);
 bool unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rssi);
@@ -324,6 +337,10 @@ bool unpack_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr)
 bool unpack_ground_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr);
 bool unpack_hwinfo_t0a(const uint8_t *buffer, size_t len, hwInfoData *data, int rssi, int snr);
 int storeHwInfoData(const hwInfoData& newData);
+int getHwInfoStationCount();
+int getHwInfoHistoryCount(int stationIdx);
+const hwInfoData* getHwInfoHistoryEntry(int stationIdx, int historyIdx);
+time_t getNewestHwInfoTimestamp(uint8_t vid, uint16_t fanet_id);
 void print_fanet_packet_t4(fanet_packet_t4 *pkt);
 void print_weatherData(weatherData *wData);
 void fill_weatherData_dummy(weatherData *wData);

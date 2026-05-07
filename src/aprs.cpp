@@ -1,6 +1,6 @@
 #include "aprs.h"
 
-extern void webconsole_print(String in);
+extern void aprsconsole_print(String in);
 
 Aprs::Aprs(){
     _user = "";
@@ -112,7 +112,7 @@ void Aprs::checkLine(String line){
       //log_i("%s:%s",getActTimeString().c_str(),line.c_str());
     }
     if (initOk == INIT_NONE){
-        webconsole_print(line);
+        aprsconsole_print(line);
         pos = getStringValue(line,"server ","\r\n",0,&s);
         if (pos > 0){
             tStatus = 0;
@@ -238,7 +238,7 @@ void Aprs::sendNameData(String devId,String name,float snr){
     sprintf (buff,"%s%s>%s,qAS,%s:>%sh Name=\"%s\" %0.1fdB\r\n","FNT",devId.c_str(),aprsTag,_user.c_str(),sTime.c_str(),name.c_str(),snr);
     
     client->print(buff); 
-    webconsole_print(buff);
+    aprsconsole_print(buff);
     client->flush();   
     //log_i("%s",buff);
 
@@ -297,7 +297,7 @@ bool Aprs::sendWeatherData(weatherData *wData){
     send += buff;
 
     size_t res = client->print(send.c_str()); 
-    webconsole_print(send);
+    aprsconsole_print(send);
     client->flush();
                
     
@@ -328,7 +328,7 @@ void Aprs::sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt
   ,getOrigin(adressType).c_str(),devId.c_str(),aprsTag,_user.c_str(),sTime.c_str(),latDeg,latMin/1000,latMin/10 %100,(lat < 0)?'S':'N',lonDeg,lonMin/1000,lonMin/10 %100,(lon < 0)?'W':'E',altBuff,int(latMin %10),int(latMin %10),getSenderDetails(true,aircraft_t::STATIC_OBJECT),devId.c_str(),state,snr);
   
   client->print(buff);
-  webconsole_print(buff);
+    aprsconsole_print(buff);
   client->flush();
                 
   //log_i("%s",buff);
@@ -392,7 +392,7 @@ void Aprs::sendTrackingData(trackingData *td){
     pos += snprintf(&buff[pos],255-pos,"FNT1%d ",getFANETAircraftType((aircraft_t)(td->aircraftType)));
     pos += snprintf(&buff[pos],255-pos,"%0.1fdB\r\n",td->snr);
     client->print(buff);
-    webconsole_print(buff);
+    aprsconsole_print(buff);
     client->flush();
 }
 
@@ -428,7 +428,7 @@ void Aprs::sendReceiverStatus(String sTime){
     
    
     client->print(sStatus);
-    webconsole_print(sStatus);
+    aprsconsole_print(sStatus);
     client->flush();
 
     
@@ -454,7 +454,7 @@ void Aprs::sendReceiverBeacon(String sTime){
     }
 
     client->print(buff);
-    webconsole_print(buff);
+    aprsconsole_print(buff);
     client->flush();
  
     

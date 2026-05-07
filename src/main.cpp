@@ -11,6 +11,7 @@
 
 #include <DNSServer.h>
 #include <Update.h>
+#include <time.h>
 
 #include "helper.h"
 #include "types.h"
@@ -45,7 +46,8 @@
 #define PIN_LED 35
 #define PIN_USERBTN 0
 
-String fw_version = "0.6.2";
+
+String fw_version = FW_VERSION;
 bool update_available = false;
 String update_available_version = "";
 bool force_update_check = false;
@@ -81,7 +83,7 @@ ICACHE_RAM_ATTR void setFlag(void) {
 
 const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 0;
-const int   daylightOffset_sec = 3600;
+const int   daylightOffset_sec = 0;
 
 String breezedudeUrl = "http://fanet.breezedude.de/submit_weather";
 String breezedudeHwInfoUrl = "http://fanet.breezedude.de/submit_hwinfo";
@@ -100,34 +102,130 @@ extern weatherData weatherStore[MAX_DEVICES];
 extern trackingData trackingStore[MAX_DEVICES];
 
 bool wifiConnected = false;
-unsigned long wifiLastAttempt = -1;
+unsigned long wifiLastAttempt = 0;
 const unsigned long wifiRetryInterval = 10000; // retry every 10 sec
 bool forceReconnectSTA = false;
 bool restartAP = false;
+bool wifiGaveUp = false; // true after connect_error_count >= 3, prevents repeated disconnect calls
+
+static const size_t WEB_CONSOLE_HISTORY_SIZE = 20;
+struct WebConsoleEntry { time_t ts; String msg; };
+WebConsoleEntry webconsole_history[WEB_CONSOLE_HISTORY_SIZE];
+size_t webconsole_history_count = 0;
+size_t webconsole_history_head = 0;
+
+static void webconsole_history_push(time_t ts, const String& msg) {
+  if (msg.length() == 0) {
+    return;
+  }
+
+  webconsole_history[webconsole_history_head] = { ts, msg };
+  webconsole_history_head = (webconsole_history_head + 1) % WEB_CONSOLE_HISTORY_SIZE;
+  if (webconsole_history_count < WEB_CONSOLE_HISTORY_SIZE) {
+    webconsole_history_count++;
+  }
+}
+
+// Normalize log payload in a single pass to avoid repeated String scans.
+static String sanitizeLogLine(const String& input) {
+  String out;
+  out.reserve(input.length());
+
+  bool sawNonWhitespace = false;
+  for (size_t i = 0; i < input.length(); i++) {
+    char c = input[i];
+    if (c == '\r' || c == '\n') {
+      c = ' ';
+    }
+
+    if (!sawNonWhitespace) {
+      if (c == ' ' || c == '\t') {
+        continue;
+      }
+      sawNonWhitespace = true;
+    }
+
+    out += c;
+  }
+
+  while (out.length() > 0) {
+    char c = out[out.length() - 1];
+    if (c == ' ' || c == '\t') {
+      out.remove(out.length() - 1);
+    } else {
+      break;
+    }
+  }
+
+  return out;
+}
 
 void webconsole_print(String in){
-  if(ws.availableForWriteAll()){
-    in.trim();
-    in.replace("\"", "\\\""); // escape quotes for json
-    String text = "{\"webconsole\":\""+ in  +"\"}"; // remove newline
-    ws.textAll(text);
-    //Serial.println(text);
+  in = sanitizeLogLine(in);
+  if (in.length() == 0) {
+    return;
   }
+
+  time_t ts = time(nullptr);
+  webconsole_history_push(ts, in);
+
+  if(ws.availableForWriteAll()){
+    JsonDocument doc;
+    doc["webconsole"] = in;
+    doc["ts"] = (uint32_t)ts;
+    String text;
+    serializeJson(doc, text);
+    ws.textAll(text);
+  }
+}
+
+void aprsconsole_print(String in){
+  in = sanitizeLogLine(in);
+  if (in.length() == 0) {
+    return;
+  }
+
+  if(ws.availableForWriteAll()){
+    JsonDocument doc;
+    doc["aprsconsole"] = in;
+    String text;
+    serializeJson(doc, text);
+    ws.textAll(text);
+  }
+}
+
+void webconsole_sync_client(AsyncWebSocketClient *client) {
+  if (client == nullptr || webconsole_history_count == 0) {
+    return;
+  }
+
+  JsonDocument doc;
+  JsonArray arr = doc["webconsole_history"].to<JsonArray>();
+
+  size_t start = (webconsole_history_head + WEB_CONSOLE_HISTORY_SIZE - webconsole_history_count) % WEB_CONSOLE_HISTORY_SIZE;
+  for (size_t i = 0; i < webconsole_history_count; i++) {
+    size_t idx = (start + i) % WEB_CONSOLE_HISTORY_SIZE;
+    JsonObject entry = arr.add<JsonObject>();
+    entry["ts"] = (uint32_t)webconsole_history[idx].ts;
+    entry["msg"] = webconsole_history[idx].msg;
+  }
+
+  String output;
+  serializeJson(doc, output);
+  client->text(output);
 }
 
   String getDeviceName(uint8_t vid, uint16_t fanet_id) {
     for (int i = 0; i < MAX_DEVICES; i++) {
       if (weatherStore[i].timestamp != 0 &&
-        weatherStore[i].vid == vid &&
-        weatherStore[i].fanet_id == fanet_id) {
+          weatherStore[i].vid == vid &&
+          weatherStore[i].fanet_id == fanet_id) {
         return weatherStore[i].name;
       }
-    }
 
-    for (int i = 0; i < MAX_DEVICES; i++) {
       if (trackingStore[i].timestamp != 0 &&
-        trackingStore[i].vid == vid &&
-        trackingStore[i].fanet_id == fanet_id) {
+          trackingStore[i].vid == vid &&
+          trackingStore[i].fanet_id == fanet_id) {
         return trackingStore[i].name;
       }
     }
@@ -240,12 +338,16 @@ void handle_fanet(){
       */
 
       if(unpack_hwinfo_t0a(byteArr, numBytes, &hi, radio_phy->getRSSI(), radio_phy->getSNR())){
-        int hiIdx = storeHwInfoData(hi);
-        ws.textAll(packHwInfo(&hwInfoStore[hiIdx]));
+        storeHwInfoData(hi);
+        ws.textAll(packHwInfo(&hi));
         if(wifiConnected && settings.sendBreezedude){
           send_hwinfo_to_frontend(&hi);
         }
-        ota_gs_try_update(hi);
+        // Only HW_INFO type 2 guarantees the sender remains in RX mode afterwards.
+        if(hi.rawAfterBuildDate[0] == 2) {
+          ota_gs_try_update(hi);
+          config_gs_try_update(hi);
+        }
       }
     }
     else if(header->type == FANET_PCK_TYPE_TRACKING){
@@ -300,11 +402,14 @@ void server_setup(){
         Serial.printf("content: %lu\r\n", request->contentLength());
 
         if (shouldReboot) {
+        webconsole_print("update upload finished successfully. Rebooting...");
             ws.textAll("{\"otaStatus\":\"Update complete. Rebooting...\"}");
             Serial.println("Rebooting");
             ws.textAll("{\"disconnect\":\"true\"}");
             delay(300);
             ESP.restart();
+      } else {
+        webconsole_print("update upload failed. See serial log for details.");
         }
     }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
 
@@ -322,8 +427,10 @@ void server_setup(){
               type = 100; // U_SPIFFS
             }
             Serial.printf("Update Start: %s, %lu\n", filename.c_str(), uploadSize);
+          webconsole_print("update upload started: " + filename + " (" + String(uploadSize) + " bytes)");
             if (!Update.begin(UPDATE_SIZE_UNKNOWN, type)){
                 Update.printError(Serial);
+            webconsole_print("update init failed. See serial log for details.");
             }
         }
         if (!Update.hasError()){
@@ -333,16 +440,20 @@ void server_setup(){
             String msg = "{\"otaStatus\":\"" + String(progress*5) + "%\"}";
             //ws.textAll(msg);
             Serial.println(msg);
+          webconsole_print("update upload progress: " + String(progress*5) + "%");
           }
             if (Update.write(data, len) != len){
                 Update.printError(Serial);
+            webconsole_print("update write failed. See serial log for details.");
             }
         }
         if (final){
             if (Update.end(true)){
                 Serial.printf("Update Success: %uB\n", index + len);
+            webconsole_print("update image validated and written: " + String(index + len) + " bytes");
             } else {
                 Update.printError(Serial);
+            webconsole_print("update finalize failed. See serial log for details.");
             }
         }
     });
@@ -381,6 +492,7 @@ void check_update(){
   if (force_update_check || (last_updatecheck == 0) || (millis() - last_updatecheck > 6*3600*1000)){
     force_update_check = false;
     last_updatecheck = millis();
+    webconsole_print("Checking firmware updates (branch: " + String(getFotaBranchName()) + ")");
     bool updatedNeeded = activeFota->execHTTPcheck();
     char buff[16];
     memset(buff,'\0', sizeof(buff));
@@ -392,12 +504,16 @@ void check_update(){
     if (updatedNeeded){
       if (settings.autoUpdate) {
         Serial.println("Installing update over internet");
+        webconsole_print("Update available: " + onlineVersionDisplay + " (current " + fw_version + "). Starting Update...");
         activeFota->execOTA();
+        webconsole_print("Update execution finished. Device may reboot if update succeeded.");
       } else {
         Serial.printf("Update available: current %s, online %s", fw_version, onlineVersionDisplay.c_str());
+        webconsole_print("Update available: " + onlineVersionDisplay + " (current " + fw_version + ") Auto update disabled, need manually install update.");
       }
     } else {
       Serial.printf("Firmware Current Version: %s, Online Version %s\r\n", fw_version, onlineVersionDisplay.c_str());
+      webconsole_print("Firmware up to date: " + fw_version + " (online " + onlineVersionDisplay + ")");
     }
   }
 }
@@ -447,8 +563,8 @@ void run_wifi() {
 
     // STA connection handling
     if(forceReconnectSTA){
-      // Todo: disconnect to force reconnect
-      connect_error_count =0;
+      connect_error_count = 0;
+      wifiGaveUp = false;
     }
     if (WiFi.status() != WL_CONNECTED) {
       wifiConnected = false;
@@ -463,22 +579,29 @@ void run_wifi() {
             //WiFi.setAutoReconnect(false);
             //WiFi.setTxPower(WIFI_POWER_17dBm);
         }
-        if( connect_error_count >=3 ){
+        if (connect_error_count >= 3 && !wifiGaveUp) {
+          wifiGaveUp = true;
           WiFi.disconnect(false);
           WiFi.enableAP(true);
+          webconsole_print("WiFi: gave up after 3 attempts, will retry in 1h");
         }
-        if(millis()- wifiLastAttempt > 1000*60*60){
+        if (millis() - wifiLastAttempt > 1000*60*60) {
           connect_error_count = 0; // retry every hour
+          wifiGaveUp = false;
         }
     } else {
         if (!wifiConnected) {
             wifiConnected = true;
-            connect_error_count =0;
+            connect_error_count = 0;
+            wifiGaveUp = false;
             Serial.println("Connected to WiFi, IP: " + WiFi.localIP().toString());
         }
+        updateInternetConnectionStatus();
         check_update();
     }
   }
+
+  process_forward_queue_tick();
 
 if(!server_started){
     ws.onEvent(onWsEvent);
@@ -606,7 +729,5 @@ void loop() {
   //handle_dummy();
   if(settings.sendAPRS){
     aprs.run(wifiConnected);
-  
-  config_gs_poll_devices();
   }
 }

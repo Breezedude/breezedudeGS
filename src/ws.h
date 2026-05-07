@@ -26,7 +26,94 @@ extern String breezedudeUrl;
 extern String breezedudeHwInfoUrl;
 extern weatherData weatherStore[MAX_DEVICES];
 extern trackingData trackingStore[MAX_DEVICES];
-extern hwInfoData hwInfoStore[MAX_DEVICES];
+extern hwInfoData hwInfoStore[HWINFO_MAX_STATIONS];
+extern void webconsole_sync_client(AsyncWebSocketClient *client);
+extern void webconsole_print(String in);
+extern void aprsconsole_print(String in);
+
+struct ForwardQueueItem {
+    String url;
+    String payload;
+};
+
+static const size_t FORWARD_QUEUE_CAPACITY = 12;
+static ForwardQueueItem forwardQueue[FORWARD_QUEUE_CAPACITY];
+static size_t forwardQueueHead = 0;
+static size_t forwardQueueCount = 0;
+static uint32_t lastForwardSendMs = 0;
+static const uint32_t FORWARD_SEND_MIN_INTERVAL_MS = 20;
+
+static String internetStatusCache = "not avaliable";
+static uint32_t internetStatusLastCheckMs = 0;
+
+// Queue outbound HTTP payloads so packet handling path stays responsive.
+bool enqueue_forward_payload(const String& url, const String& payload) {
+    if (payload.length() == 0) {
+        return false;
+    }
+
+    // Drop the oldest item when queue is full to keep latest telemetry flowing.
+    if (forwardQueueCount >= FORWARD_QUEUE_CAPACITY) {
+        forwardQueueHead = (forwardQueueHead + 1) % FORWARD_QUEUE_CAPACITY;
+        forwardQueueCount--;
+    }
+
+    size_t idx = (forwardQueueHead + forwardQueueCount) % FORWARD_QUEUE_CAPACITY;
+    forwardQueue[idx].url = url;
+    forwardQueue[idx].payload = payload;
+    forwardQueueCount++;
+    return true;
+}
+
+void process_forward_queue_tick() {
+    if (forwardQueueCount == 0 || WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+
+    if ((millis() - lastForwardSendMs) < FORWARD_SEND_MIN_INTERVAL_MS) {
+        return;
+    }
+
+    ForwardQueueItem item = forwardQueue[forwardQueueHead];
+    forwardQueueHead = (forwardQueueHead + 1) % FORWARD_QUEUE_CAPACITY;
+    forwardQueueCount--;
+    lastForwardSendMs = millis();
+
+    HTTPClient http;
+    http.setTimeout(HTTPTIMEOUT);
+    http.begin(item.url);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("ID", settings.deviceName);
+
+    int httpResponseCode = http.POST(item.payload);
+    if (httpResponseCode > 0) {
+        Serial.print("HTTP response code: ");
+        Serial.println(httpResponseCode);
+    } else {
+        Serial.print("Error on sending POST: ");
+        Serial.println(httpResponseCode);
+    }
+    http.end();
+}
+
+void updateInternetConnectionStatus() {
+    if (internetStatusLastCheckMs != 0 && (millis() - internetStatusLastCheckMs) <= 15000) {
+        return;
+    }
+
+    internetStatusLastCheckMs = millis();
+    if (WiFi.status() != WL_CONNECTED) {
+        internetStatusCache = "not avaliable";
+        return;
+    }
+
+    HTTPClient http;
+    http.setTimeout(1200);
+    http.begin("http://fanet.breezedude.de/");
+    int httpResponseCode = http.GET();
+    internetStatusCache = (httpResponseCode > 0) ? "ok" : "not avaliable";
+    http.end();
+}
 
 
 // ---- Async WiFi scan state machine ----
@@ -119,10 +206,15 @@ String getFormattedUptime(uint32_t uptimeSeconds) {
   byte hours           = uptimeSeconds / 3600;
   uptimeSeconds        = uptimeSeconds % 3600;
   byte minutes         = uptimeSeconds / 60;
-  byte seconds         = uptimeSeconds % 60;
 
   char buffer[25];
-  snprintf(buffer, sizeof(buffer), "%ud %02uh %02um %02us", days, hours, minutes, seconds);
+  if (days > 0) {
+    snprintf(buffer, sizeof(buffer), "%ud %uh %um", days, hours, minutes);
+  } else if (hours > 0) {
+    snprintf(buffer, sizeof(buffer), "%uh %um", hours, minutes);
+  } else {
+    snprintf(buffer, sizeof(buffer), "%um", minutes);
+  }
   return String(buffer);
 }
 
@@ -137,29 +229,12 @@ if(settings.sendAPRS){
 }
 
 String getInternetConnectionStatus() {
-    static uint32_t lastCheck = 0;
-    static String lastStatus = "not avaliable";
-
-    if (lastCheck == 0 || (millis() - lastCheck) > 15000) {
-        lastCheck = millis();
-
-        if (WiFi.status() != WL_CONNECTED) {
-            lastStatus = "not avaliable";
-        } else {
-            HTTPClient http;
-            http.setTimeout(1200);
-            http.begin("http://fanet.breezedude.de/");
-            int httpResponseCode = http.GET();
-            lastStatus = (httpResponseCode > 0) ? "ok" : "not avaliable";
-            http.end();
-        }
-    }
-
-    return lastStatus;
+    return internetStatusCache;
 }
 
 String packWeather(weatherData *wt){
-    JsonDocument resp;
+    static JsonDocument resp;
+    resp.clear();
     JsonArray weatherArray = resp["weather"].to<JsonArray>();
     JsonObject w = weatherArray.add<JsonObject>();
 
@@ -188,7 +263,8 @@ String packWeather(weatherData *wt){
 }
 
 String packTracking(trackingData *td) {
-    JsonDocument resp;
+    static JsonDocument resp;
+    resp.clear();
     JsonArray trackArray = resp["tracking"].to<JsonArray>();
     JsonObject t = trackArray.add<JsonObject>();
 
@@ -236,8 +312,9 @@ String bytesToHex(const uint8_t *data, size_t len) {
     return out;
 }
 
-String packHwInfo(hwInfoData *hi) {
-    JsonDocument resp;
+String packHwInfo(const hwInfoData *hi) {
+    static JsonDocument resp;
+    resp.clear();
     JsonArray hwInfoArray = resp["hwinfo"].to<JsonArray>();
     JsonObject h = hwInfoArray.add<JsonObject>();
 
@@ -248,6 +325,7 @@ String packHwInfo(hwInfoData *hi) {
     h["rssi"] = hi->rssi;
     h["snr"] = hi->snr;
     h["tLastMsg"] = hi->timestamp;
+    h["tNewestHwInfo"] = getNewestHwInfoTimestamp(hi->vid, hi->fanet_id);
 
     h["subHeader"] = hi->subHeader;
     h["pingPongRequest"] = hi->pingPongRequest;
@@ -292,53 +370,13 @@ String packHwInfo(hwInfoData *hi) {
 }
 
 void send_wd_to_frontend(weatherData *wt){
-  HTTPClient http;
-  http.setTimeout(HTTPTIMEOUT);
-  http.begin(breezedudeUrl);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("ID", settings.deviceName);
-
-  JsonDocument doc;
   String payload = packWeather(wt);
-
-  // Send POST
-    int httpResponseCode = http.POST(payload);
-    if (httpResponseCode > 0) {
-        String response = http.getString();
-        Serial.print("HTTP Response code: ");
-        Serial.println(httpResponseCode);
-        Serial.print("Response: ");
-        Serial.println(response);
-    } else {
-        Serial.print("Error on sending POST: ");
-        Serial.println(httpResponseCode);
-    }
-
-    http.end();
+    enqueue_forward_payload(breezedudeUrl, payload);
 }
 
 void send_hwinfo_to_frontend(hwInfoData *hi) {
-  HTTPClient http;
-  http.setTimeout(HTTPTIMEOUT);
-  http.begin(breezedudeHwInfoUrl);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("ID", settings.deviceName);
-
   String payload = packHwInfo(hi);
-
-  int httpResponseCode = http.POST(payload);
-  if (httpResponseCode > 0) {
-      String response = http.getString();
-      Serial.print("HTTP HWInfo response code: ");
-      Serial.println(httpResponseCode);
-      Serial.print("Response: ");
-      Serial.println(response);
-  } else {
-      Serial.print("Error sending HWInfo POST: ");
-      Serial.println(httpResponseCode);
-  }
-
-  http.end();
+    enqueue_forward_payload(breezedudeHwInfoUrl, payload);
 }
 
 void ws_init(AsyncWebSocket* ws) {
@@ -350,6 +388,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
 
   if (type == WS_EVT_CONNECT){
     Serial.printf("WS connected\r\n");
+        webconsole_sync_client(client);
   }
   else if (type == WS_EVT_DISCONNECT){
     Serial.printf("WS disconnected\r\n");
@@ -454,8 +493,15 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
             if (current_time - trackingStore[i].timestamp < time*60) { // if valid packet within the last x minutes
                 client->text(packTracking(&trackingStore[i]));
             }
-            if (hwInfoStore[i].timestamp != 0) { // no time limit for hwinfo
-                client->text(packHwInfo(&hwInfoStore[i]));
+        }
+
+        for (int stationIdx = 0; stationIdx < HWINFO_MAX_STATIONS; stationIdx++) {
+            int hwCount = getHwInfoHistoryCount(stationIdx);
+            for (int hwIdx = 0; hwIdx < hwCount; hwIdx++) {
+                const hwInfoData *hi = getHwInfoHistoryEntry(stationIdx, hwIdx);
+                if (hi != nullptr) {
+                    client->text(packHwInfo(hi));
+                }
             }
         }
     }

@@ -228,7 +228,8 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
                      "&slotCapacityKb=" + String(ann.slotCapacityKb) +
                      "&rssi=" + String(ann.rssi);
 
-  webconsole_print("OTA: Querying backend: " + url);
+  //webconsole_print("OTA: Querying backend: " + url);
+  //webconsole_print("OTA: Querying backend for updates");
 
   // Clients must outlive http.getString(), so declare at function scope.
   WiFiClient plainClient;
@@ -261,7 +262,7 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
   }
 
   String responseBody = http.getString();
-  webconsole_print("OTA: Backend response (" + String(responseBody.length()) + " bytes): " + responseBody.substring(0, min(200, (int)responseBody.length())));
+  //webconsole_print("OTA: Backend response (" + String(responseBody.length()) + " bytes): " + responseBody.substring(0, min(200, (int)responseBody.length())));
   
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, responseBody);
@@ -282,6 +283,7 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
     if(reasonLower.indexOf("another ground station") >= 0 ||
        reasonLower.indexOf("better signal") >= 0) {
       manifest.suppressNoUpdateNotify = true;
+      webconsole_print("OTA: Other GS with better signal will handle update");
     }
 
     ota_status("OTA: backend reports no update available");
@@ -461,7 +463,7 @@ static bool sendAbort(const OtaAnnouncement& ann, uint8_t status) {
 }
 
 static void notifyNoUpdate(const OtaAnnouncement& ann) {
-  ota_status("OTA: no update available, notifying device");
+  //ota_status("OTA: no update available, notifying device");
   if(!sendFanetAck(ann)) {
     return;
   }
@@ -544,7 +546,7 @@ static bool streamFirmware(const OtaAnnouncement& ann, const OtaManifest& manife
     return false;
   }
 
-  ota_status(String("OTA: transfer started, ") + manifest.imageSize + " bytes");
+  //ota_status(String("OTA: transfer started, ") + manifest.imageSize + " bytes");
 
   const uint32_t transferStartMs = millis();
   uint8_t chunk[OTA_MAX_CHUNK] = {0};
@@ -632,7 +634,7 @@ void ota_gs_try_update(const hwInfoData& info) {
   s_busy = true;
   char deviceId[16];
   snprintf(deviceId, sizeof(deviceId), "%02X%04X", ann.vendor, ann.address);
-  ota_status(String("OTA: triggered for ") + deviceId + " nonce=" + String((unsigned long)ann.nonce));
+  ota_status(String("OTA: request from ") + deviceId + " with version " + formatVersionBcd(ann.versionBcd));
 
   bool ok = queryBackend(ann, manifest);
   if(!ok) {
@@ -640,10 +642,8 @@ void ota_gs_try_update(const hwInfoData& info) {
     return;
   }
   if(!manifest.available) {
-    ota_status(String("OTA: device installed version ") + formatVersionBcd(ann.versionBcd) +
-               " (0x" + String(ann.versionBcd, HEX) + "), backend has no update");
     if(manifest.suppressNoUpdateNotify) {
-      ota_status("OTA: passive mode, another ground station selected - no notify/abort sent");
+      //ota_status("OTA: passive mode, another ground station selected - no notify/abort sent");
       s_busy = false;
       return;
     }
@@ -669,18 +669,18 @@ void ota_gs_try_update(const hwInfoData& info) {
   ota_status("OTA: backend signature received, device will verify");
 
   if(manifest.imageSize > ((uint32_t)ann.slotCapacityKb * 1024u)) {
-    ota_status("OTA: image does not fit into inactive slot");
+    ota_status("OTA: image does not fit into target flash");
     s_busy = false;
     return;
   }
 
   std::unique_ptr<uint8_t[]> firmwareImage;
   if(!downloadFirmwareImage(manifest, firmwareImage)) {
-    ota_status("OTA: preload failed, device stays in normal mode");
+    ota_status("OTA: firmware preload failed, aborting");
     s_busy = false;
     return;
   }
-  ota_status("OTA: firmware buffered, starting device RX window");
+  ota_status("OTA: firmware buffered, starting target RX mode");
 
   ota_status("OTA: sending FANET ACK handshake");
   if(!sendFanetAck(ann)) {
@@ -692,7 +692,7 @@ void ota_gs_try_update(const hwInfoData& info) {
   applyRadioMode(true);
   delay(120);
 
-  ota_status("OTA: switching to fast mode and sending start packet");
+  ota_status("OTA: switching to transfer mode and sending start packet");
   if(!sendStart(ann, manifest)) {
     applyRadioMode(false);
     s_busy = false;
@@ -701,7 +701,7 @@ void ota_gs_try_update(const hwInfoData& info) {
 
   uint16_t nextSeq = 0;
   uint8_t status = 0;
-  ota_status("OTA: waiting for device handshake response");
+  //ota_status("OTA: waiting for device handshake response");
   if(!waitForAck(ann.nonce, nextSeq, status, 4000) || status != OTA_STATE_RX) {
     ota_status("OTA: start handshake not accepted by device");
     sendAbort(ann, OTA_ERR_TIMEOUT);
@@ -721,7 +721,7 @@ void ota_gs_try_update(const hwInfoData& info) {
   }
 
   ota_status(String("OTA: transfer duration ") + String((millis() - transferStartMs) / 1000.0f, 2) + " s");
-  ota_status("OTA: transfer done, sending finish");
+  //ota_status("OTA: transfer done, sending finish");
   if(!sendFinish(ann, manifest)) {
     sendAbort(ann, OTA_ERR_TIMEOUT);
     applyRadioMode(false);

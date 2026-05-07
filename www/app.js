@@ -35,13 +35,15 @@ function decodeHwInfoDebug(rawBytes) {
     result.lbt_counter = bytes[9];
   }
 
-  if (result.decode_type === 0x02 && bytes.length >= 10) {
+  if (result.decode_type === 0x02 && bytes.length >= 11) {
     const vbcd = bytes[1] | (bytes[2] << 8);
     result.version_bcd = vbcd;
     result.version = `${(vbcd >> 8) & 0x0F}.${(vbcd >> 4) & 0x0F}.${vbcd & 0x0F}`;
     result.nonce = (bytes[3]) | (bytes[4] << 8) | (bytes[5] << 16) | (bytes[6] << 24);
     result.slot_capacity_kb = bytes[7] | (bytes[8] << 8);
     result.ota_proto = bytes[9];
+    result.ota_state = bytes[10] & 0x01;
+    result.ota_state_text = result.ota_state ? 'B' : 'A';
   }
 
   if (result.decode_type === 0x03 && bytes.length >= 5) {
@@ -51,7 +53,7 @@ function decodeHwInfoDebug(rawBytes) {
     result.use_baro = ((cfg >> 5) & 0x01) === 1;
     result.uv_triggered = ((cfg >> 6) & 0x01) === 1;
     result.lbt = ((cfg >> 7) & 0x01) === 1;
-    result.lora_rssi_threshold = -bytes[2];
+    result.lbt_rssi_threshold = -bytes[2];
     result.sensor_integ_s = bytes[3];
     result.reduce_interval_voltage = 2 + bytes[4] / 100.0;
   }
@@ -62,25 +64,42 @@ function decodeHwInfoDebug(rawBytes) {
 function buildHwInfoHtml(hi, merged) {
   const row = (label, value) =>
     `<div class="hwinfo-row-item"><span class="hwinfo-label">${label}</span><span class="hwinfo-value">${value}</span></div>`;
+  const formatDateTime = (unixSec) => {
+    if (!Number.isFinite(unixSec) || unixSec <= 0) return null;
+    const d = new Date(unixSec * 1000);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleString();
+  };
+
   const buildDate = (hi.buildYear && hi.buildMonth && hi.buildDay)
     ? `${hi.buildYear}-${String(hi.buildMonth).padStart(2, '0')}-${String(hi.buildDay).padStart(2, '0')}`
     : null;
+  const latestRxText = formatDateTime(merged.newestHwTs);
   let items = '';
-  if (buildDate)                          items += row('Build Date', buildDate + (hi.isDevelopmentBuild ? ' <em>(dev)</em>' : ''));
+  if (latestRxText)                      items += row('Last Info', latestRxText);
+  if (buildDate)                          items += row('FW Build Date', buildDate + (hi.isDevelopmentBuild ? ' <em>(dev)</em>' : ''));
   if (merged.version !== undefined)       items += row('FW Version', merged.version);
-  if (hi.hasUptime && hi.uptimeMinutes !== undefined) items += row('Uptime', hi.uptimeMinutes + ' min');
+  if (hi.hasUptime && hi.uptimeMinutes !== undefined) {
+    const uDays = Math.floor(hi.uptimeMinutes / 1440);
+    const uHours = Math.floor((hi.uptimeMinutes % 1440) / 60);
+    const uMins = hi.uptimeMinutes % 60;
+    const uptimeStr = uDays > 0 ? `${uDays}d ${uHours}h ${uMins}m` : uHours > 0 ? `${uHours}h ${uMins}m` : `${uMins}m`;
+    items += row('Uptime', uptimeStr);
+  }
   if (merged.vbatt_mv !== undefined)      items += row('Battery', (merged.vbatt_mv / 1000).toFixed(2) + ' V (' + merged.batt_perc + '%)');
   if (merged.pv_state !== undefined)      items += row('PV State', merged.pv_state);
-  if (merged.rx_count !== undefined)      items += row('RX Count', merged.rx_count);
-  if (merged.forward_count !== undefined) items += row('Forward Count', merged.forward_count);
+  if (merged.rx_count !== undefined)      items += row('FANET RX Count', merged.rx_count);
+  if (merged.forward_count !== undefined) items += row('FANET FWD Count', merged.forward_count);
   if (merged.sensor_type_text !== undefined) items += row('Sensor Type', merged.sensor_type_text);
   else if (merged.sensor_type !== undefined) items += row('Sensor Type', merged.sensor_type);
-  if (merged.lora_rssi_threshold !== undefined) items += row('LoRa RSSI Thr.', merged.lora_rssi_threshold + ' dBm');
+  if (merged.lbt_rssi_threshold !== undefined) items += row('LBT RSSI Thr.', merged.lbt_rssi_threshold + ' dBm');
   if (merged.lbt !== undefined)           items += row('LBT', merged.lbt ? 'on (' + (merged.lbt_counter ?? 0) + ')' : 'off');
-  if (merged.sensor_integ_s !== undefined) items += row('Sensor Integ.', merged.sensor_integ_s + ' s');
-  if (merged.reduce_interval_voltage !== undefined) items += row('Reduce V', merged.reduce_interval_voltage.toFixed(2) + ' V');
-  if (merged.slot_capacity_kb !== undefined) items += row('OTA Slot', merged.slot_capacity_kb + ' KiB');
-  if (merged.ota_proto !== undefined)     items += row('OTA Proto', merged.ota_proto);
+  if (merged.ota_state_text !== undefined) items += row('Active OTA Slot', merged.ota_state_text);
+  if( merged.sensor_type !== undefined && ( merged.sensor_type === 4)) { // davis sensor
+    if (merged.sensor_integ_s !== undefined) items += row('Sensor Integ.', merged.sensor_integ_s + ' s');
+  }
+  if (merged.reduce_interval_voltage !== undefined) items += row('Low Power Mode', merged.reduce_interval_voltage.toFixed(2) + ' V');
+  // if (merged.slot_capacity_kb !== undefined) items += row('OTA Slot', merged.slot_capacity_kb + ' KiB');
   return `<div class="hwinfo-grid">${items}</div>`;
 }
 
@@ -96,7 +115,9 @@ function toggleHwInfoRow(stationId, dataRow) {
   td.colSpan = 12;
   td.className = 'hwinfo-detail';
   const hwi = stationHwInfo.get(stationId);
-  td.innerHTML = hwi ? buildHwInfoHtml(hwi.raw, hwi.merged) : '<em style="color:var(--muted-text)">No HW info received yet</em>';
+  td.innerHTML = hwi
+    ? buildHwInfoHtml(hwi.raw, hwi.merged)
+    : '<div class="hwinfo-grid"><div class="hwinfo-row-item"><span class="hwinfo-label">No HW info received yet</span></div></div>';
   detailRow.appendChild(td);
   dataRow.parentNode.insertBefore(detailRow, dataRow.nextSibling);
 }
@@ -135,13 +156,51 @@ let reconnectInterval = 2000; // 2 seconds
 let wsHeartbeatInterval;
 let lastWsMessageTime = Date.now();
 const WS_TIMEOUT_MS = 5000; // 5 seconds without message = disconnected
+const MAX_CONSOLE_LINES = 1000;
 let got_settings = false;
+const domCache = new Map();
 
 const REQUIRED_DEFAULTS = {
   deviceName: "MyGS",
   lat: 47.0,
   lon: 12.0
 };
+
+function normalizeConsoleText(text) {
+  return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function getEl(id) {
+  if (!id) return null;
+  if (domCache.has(id)) return domCache.get(id);
+  const el = document.getElementById(id);
+  domCache.set(id, el || null);
+  return el;
+}
+
+function setConsoleLines(textarea, lines) {
+  if (!textarea) return;
+  const limitedLines = lines.slice(-MAX_CONSOLE_LINES);
+  textarea.value = limitedLines.length > 0 ? `${limitedLines.join('\n')}\n` : '';
+  textarea.scrollTop = textarea.scrollHeight;
+}
+
+function appendConsoleText(textarea, text) {
+  if (!textarea) return;
+
+  const incomingLines = normalizeConsoleText(text)
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+
+  if (incomingLines.length === 0) return;
+
+  const existingLines = normalizeConsoleText(textarea.value)
+    .split('\n')
+    .filter((line) => line.length > 0);
+
+  setConsoleLines(textarea, existingLines.concat(incomingLines));
+}
 
 // Section toggler
 function toggleSection(header) {
@@ -419,8 +478,8 @@ setInterval(() => {
 
 function updateFieldsFromData(data) {
 
-    const updateLink = document.getElementById("update_link");
-    const updateNotice = document.getElementById("update_notice");
+  const updateLink = getEl("update_link");
+  const updateNotice = getEl("update_notice");
 
 
     if (updateLink && updateNotice) {
@@ -436,8 +495,9 @@ function updateFieldsFromData(data) {
     }
 
     Object.keys(data).forEach(key => {
-        const el = document.getElementById(key);
-        if (el) {
+      const el = getEl(key);
+        const skipGenericUpdate = key === 'aprsconsole' || key === 'webconsole' || key === 'webconsole_history';
+        if (el && !skipGenericUpdate) {
             if (el.tagName === 'INPUT') {
                 if (el.type === 'checkbox') {
                     el.checked = !!data[key];
@@ -454,14 +514,33 @@ function updateFieldsFromData(data) {
         }
 
         if(key === "msg"){
-          setInterval(() => {el.innerText = "";}, 3000);
+          setTimeout(() => { if (el) el.innerText = ""; }, 3000);
+        }
+        if(key === "webconsole_history"){
+          const con = getEl('webconsole');
+          if (con && Array.isArray(data[key])) {
+            const historyLines = data[key]
+              .filter((e) => e && typeof e.msg === 'string')
+              .map((e) => {
+                const ts = e.ts && e.ts > 100000 ? new Date(e.ts * 1000).toLocaleTimeString() : (e.ts ? '+' + new Date(e.ts * 1000).toISOString().slice(11, 19) : '?');
+                return `[${ts}] ${e.msg}`;
+              });
+            setConsoleLines(con, historyLines);
+          }
         }
         if(key === "webconsole"){
-          if(data[key]) {
+          const con = getEl('webconsole');
+          if(con && data[key]) {
+            const ts = data.ts && data.ts > 100000 ? new Date(data.ts * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+            appendConsoleText(con, `[${ts}] ${data[key]}`);
+          }
+        }
+        if(key === "aprsconsole"){
+          const aprsCon = getEl('aprsconsole');
+          if(aprsCon && data[key]) {
             const now = new Date();
             const time = now.toLocaleTimeString();
-            if(el.value && !el.value.endsWith('\n')) el.value += '\r\n';
-            el.value += `[${time}] ${data[key]}\r\n`;
+            appendConsoleText(aprsCon, `[${time}] ${data[key]}`);
           }
         }
 
@@ -473,7 +552,7 @@ function updateFieldsFromData(data) {
           toggleAPRSInputs();
         }
         if(key === "updateBranch") {
-          const warning = document.getElementById('betaWarning');
+          const warning = getEl('betaWarning');
           if (warning) warning.style.display = data[key] === 'beta' ? '' : 'none';
         }
         if(key === "deviceName"){
@@ -506,11 +585,21 @@ window.addEventListener('load', () => {
     });
     document.getElementById('lat').addEventListener('input', () => updateAprsGuardUi(false));
     document.getElementById('lon').addEventListener('input', () => updateAprsGuardUi(false));
-    const clearButton  = document.getElementById('clearButton');
-    clearButton.addEventListener('click', () => {
-      let con = document.getElementById('webconsole');
-      con.value = "";
-    });
+    const clearGeneralConsole = document.getElementById('clearGeneralConsole');
+    if (clearGeneralConsole) {
+      clearGeneralConsole.addEventListener('click', () => {
+        const con = document.getElementById('webconsole');
+        if (con) con.value = "";
+      });
+    }
+
+    const clearAprsConsole = document.getElementById('clearAprsConsole');
+    if (clearAprsConsole) {
+      clearAprsConsole.addEventListener('click', () => {
+        const con = document.getElementById('aprsconsole');
+        if (con) con.value = "";
+      });
+    }
 
 });
 
@@ -726,9 +815,13 @@ function initWebSocket() {
         const stationId = hi.vid.toString(16).toUpperCase().padStart(2, "0") +
                           hi.fanet_id.toString(16).toUpperCase().padStart(4, "0");
         const decoded = decodeHwInfoDebug(hi.rawBytes || []);
+        const packetTs = Number(hi.tLastMsg || 0);
+        const packetNewestTs = Number(hi.tNewestHwInfo || 0);
         // Merge: keep latest value of each field across decode types
         const prev = stationHwInfo.get(stationId);
-        const merged = Object.assign({}, prev ? prev.merged : {}, decoded);
+        const previousNewest = prev && prev.merged && Number(prev.merged.newestHwTs || 0);
+        const newestHwTs = Math.max(previousNewest || 0, packetTs || 0, packetNewestTs || 0);
+        const merged = Object.assign({}, prev ? prev.merged : {}, decoded, { newestHwTs });
         stationHwInfo.set(stationId, { raw: hi, merged });
 
         // Update open detail row if visible

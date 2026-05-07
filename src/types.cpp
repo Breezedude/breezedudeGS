@@ -2,7 +2,8 @@
 
 weatherData weatherStore[MAX_DEVICES];
 trackingData trackingStore[MAX_DEVICES];
-hwInfoData hwInfoStore[MAX_DEVICES];
+hwInfoData hwInfoStore[HWINFO_MAX_STATIONS];
+hwInfoStationHistory hwInfoHistory[HWINFO_MAX_STATIONS];
 
 int storeWeatherData(const weatherData& newData) {
     return storeFanetData(weatherStore, MAX_DEVICES, newData);
@@ -13,7 +14,106 @@ int storeTrackingData(const trackingData& newData) {
 }
 
 int storeHwInfoData(const hwInfoData& newData) {
-    return storeFanetData(hwInfoStore, MAX_DEVICES, newData);
+    int stationIdx = -1;
+
+    for (int i = 0; i < HWINFO_MAX_STATIONS; ++i) {
+        if (hwInfoHistory[i].used &&
+            hwInfoHistory[i].vid == newData.vid &&
+            hwInfoHistory[i].fanet_id == newData.fanet_id) {
+            stationIdx = i;
+            break;
+        }
+    }
+
+    if (stationIdx < 0) {
+        for (int i = 0; i < HWINFO_MAX_STATIONS; ++i) {
+            if (!hwInfoHistory[i].used) {
+                stationIdx = i;
+                break;
+            }
+        }
+    }
+
+    if (stationIdx < 0) {
+        stationIdx = 0;
+        time_t oldest = hwInfoHistory[0].newestTimestamp;
+        for (int i = 1; i < HWINFO_MAX_STATIONS; ++i) {
+            if (hwInfoHistory[i].newestTimestamp < oldest) {
+                oldest = hwInfoHistory[i].newestTimestamp;
+                stationIdx = i;
+            }
+        }
+    }
+
+    hwInfoStationHistory &slot = hwInfoHistory[stationIdx];
+
+    if (!slot.used || slot.vid != newData.vid || slot.fanet_id != newData.fanet_id) {
+        slot.used = true;
+        slot.vid = newData.vid;
+        slot.fanet_id = newData.fanet_id;
+        slot.head = 0;
+        slot.count = 0;
+        slot.newestTimestamp = 0;
+        for (int i = 0; i < HWINFO_HISTORY_PER_STATION; ++i) {
+            slot.entries[i].timestamp = 0;
+        }
+    }
+
+    slot.entries[slot.head] = newData;
+    slot.head = (slot.head + 1) % HWINFO_HISTORY_PER_STATION;
+    if (slot.count < HWINFO_HISTORY_PER_STATION) {
+        slot.count++;
+    }
+    slot.newestTimestamp = newData.timestamp;
+
+    hwInfoStore[stationIdx] = newData;
+    return stationIdx;
+}
+
+int getHwInfoStationCount() {
+    int count = 0;
+    for (int i = 0; i < HWINFO_MAX_STATIONS; ++i) {
+        if (hwInfoHistory[i].used) {
+            count++;
+        }
+    }
+    return count;
+}
+
+int getHwInfoHistoryCount(int stationIdx) {
+    if (stationIdx < 0 || stationIdx >= HWINFO_MAX_STATIONS) {
+        return 0;
+    }
+    if (!hwInfoHistory[stationIdx].used) {
+        return 0;
+    }
+    return hwInfoHistory[stationIdx].count;
+}
+
+const hwInfoData* getHwInfoHistoryEntry(int stationIdx, int historyIdx) {
+    if (stationIdx < 0 || stationIdx >= HWINFO_MAX_STATIONS) {
+        return nullptr;
+    }
+
+    const hwInfoStationHistory &slot = hwInfoHistory[stationIdx];
+    if (!slot.used || historyIdx < 0 || historyIdx >= slot.count) {
+        return nullptr;
+    }
+
+    int oldest = (slot.head + HWINFO_HISTORY_PER_STATION - slot.count) % HWINFO_HISTORY_PER_STATION;
+    int idx = (oldest + historyIdx) % HWINFO_HISTORY_PER_STATION;
+    return &slot.entries[idx];
+}
+
+time_t getNewestHwInfoTimestamp(uint8_t vid, uint16_t fanet_id) {
+    for (int i = 0; i < HWINFO_MAX_STATIONS; ++i) {
+        if (hwInfoHistory[i].used &&
+            hwInfoHistory[i].vid == vid &&
+            hwInfoHistory[i].fanet_id == fanet_id) {
+            return hwInfoHistory[i].newestTimestamp;
+        }
+    }
+    return 0;
 }
 
 

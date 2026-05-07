@@ -33,12 +33,14 @@ Multicore is not explicitly required. The project uses **[RadioLib](https://gith
 - Optionally posts data to an HTTP API endpoint (e.g., breezedude server)  
 - Simple and modern web UI with captive portal and WebSocket live data
 - Web updater (firmware & web)
+- Remote configuration updates for Breezedude wind sensors via LoRa
+- Over-the-air firmware updates for Breezedude devices
 
 ## 🚫 Not Features
 
-- No FANET frame forwarding — this is an internet gateway; who would receive them? Everyone flies with a phone  
-- No third-party weather station data sent to FANET  
-- Not a weather station: no display, no external sensors  
+- No FANET frame forwarding — this is an internet gateway; who would receive them? 
+- No third-party weather station data sent out to FANET  
+- Not a weather station, no display, no external sensors  
 - Wi-Fi only for now — cellular support may be added later (only for solar-powered hardware)
 
 If you miss some features let me know.
@@ -88,14 +90,36 @@ If something went wrong, you can reset to factory config by pressing and holding
 
 For debugging you may connect to your device using [Breezedude Web Installer](https://install.breezedude.de/) and open the console by clicking `Logs & Console`
 
+## 🔧 Remote Configuration Updates
+
+The Ground Station automatically polls the Breezedude backend for pending configuration updates for all known devices.
+
+**How it works:**
+1. Configuration changes and firmware selection can be made in a UI (coming soon) and will be stored in the Database
+2. Breezedude sends firmware version to Ground Station. Groundstation requests server for update.
+3. If any updates are pending the GS receives a signed packet and a unique `session_id`
+4. The packet is transmitted via LoRa to the target device
+5. The target device checks the signature and applies changes to flash. Acceptance is confirmed to Ground Station.
+5. GS reports the confirmation to backend using the `session_id`
+
+**Security:**
+- All config packets are cryptographically signed by the backend (ECDSA P-256)
+- Each device verifies the signature using its unique UUID suffix
+- Session IDs prevent API spoofing attacks
+
+
+**Monitoring:**
+- Config and firmware update activities are logged to serial output and web console.
+
 ## ↗ Updating
 ### Using Web Update (recommended)
 Get the current version from [releases](https://github.com/thezenox/breezedudeGS/releases)
 Open configuration page of breezedude groundstation
-- Backup the settings by clicking `Export Config` in Tools
-- In Tools select 'Update' and upload `firmware_update.bin`
+- (optional) Backup the settings by clicking `Export Config` in Tools
 - In Tools select 'Update' and upload `littlefs.bin`
-- Restore Config if its broken/reset by uploading your backup file. Don't forget to click `Save` to write the uploaded settings
+- In Tools select 'Update' and upload `firmware_update.bin`
+
+(optional) Restore Config if its broken/reset by uploading your backup file. Don't forget to click `Save` to write the uploaded settings
 This should work most of the time. If some changes break the updater, an clean upload with WebFlasher/PIO may be required.
 
 ### Using Fresh install

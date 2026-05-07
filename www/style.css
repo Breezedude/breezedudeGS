@@ -377,7 +377,7 @@ body {
 
     /* --- HW INFO EXPAND ROW --- */
     td.hwinfo-detail {
-      padding: 4px 16px 6px;
+      padding: 6px 16px 8px 34px;
       background: rgba(255, 255, 255, 0.03);
       border-top: 1px solid var(--table-border);
       text-align: left;
@@ -388,6 +388,7 @@ body {
       grid-template-columns: 1fr 1fr;
       column-gap: 20px;
       row-gap: 0;
+      padding-left: 6px;
     }
 
     .hwinfo-row-item {

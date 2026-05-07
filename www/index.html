@@ -86,7 +86,7 @@
   <div id="div_wifi" class="section-content">
     <div class="form-grid">
 
-      <div class="form-card form-card--full">
+      <div class="form-card form-card--full" style="display:none;">
         <div class="wifi-scan-row">
           <span class="wifi-scan-hint">Type manually or</span>
           <button id="wifiScanBtn" onclick="scanWiFi()">Scan WiFi</button>
@@ -322,8 +322,22 @@
     <span id="import_status"></span>
     <hr>
     <h4>Console</h4>
-    <button id="clearButton">🪠 Clear</button>
-    <textarea class="console" id="webconsole" rows="20" readonly></textarea>
+
+    <details open>
+      <summary>System Console</summary>
+      <div style="margin-top:8px;">
+        <button id="clearGeneralConsole">🪠 Clear</button>
+        <textarea class="console" id="webconsole" rows="16" readonly></textarea>
+      </div>
+    </details>
+
+    <details style="margin-top:10px;">
+      <summary>APRS Console</summary>
+      <div style="margin-top:8px;">
+        <button id="clearAprsConsole">🪠 Clear</button>
+        <textarea class="console" id="aprsconsole" rows="12" readonly></textarea>
+      </div>
+    </details>
     
   </div>
 </div>

@@ -22,8 +22,12 @@ extern trackingData trackingStore[MAX_DEVICES];
 // Config update packet type from device
 static constexpr uint8_t CONFIG_UPDATE_PKT_TYPE = 0x0C;
 
-static uint32_t s_last_poll_ms = 0;
-static constexpr uint32_t POLL_INTERVAL_MS = 60000UL; // Poll every 60 seconds
+// Debounce config update queries: track last device to avoid thrashing same device.
+// Uses vid:fanet_id pair to identify devices.
+static uint8_t s_last_config_vid = 0;
+static uint16_t s_last_config_fanet_id = 0;
+static uint32_t s_last_config_attempt_ms = 0;
+static constexpr uint32_t CONFIG_QUERY_DEBOUNCE_MS = 30000UL; // Requery same device after 30s
 
 static void config_status(const String& msg) {
   Serial.println(msg);
@@ -164,7 +168,7 @@ static bool confirmConfigTransmission(const String& sessionId) {
   }
 
   http.end();
-  config_status("Config: transmission confirmed with session " + sessionId.substring(0, 8) + "...");
+  //config_status("Config: transmission confirmed with session " + sessionId.substring(0, 8) + "...");
   return true;
 }
 
@@ -242,7 +246,7 @@ static bool transmitConfigPacket(const uint8_t* payload, size_t payloadLen) {
   buf[3] = CONFIG_OTA_OP;
   memcpy(buf + PREFIX_LEN, payload, payloadLen);
 
-  config_status(String("Config: transmitting ") + totalLen + " bytes via LoRa");
+  //config_status(String("Config: transmitting ") + totalLen + " bytes via LoRa");
 
   int state = radio_phy->transmit(buf, totalLen);
   if(state != RADIOLIB_ERR_NONE) {
@@ -316,12 +320,12 @@ static void processConfigUpdate(const String& fanetId, uint32_t nonce = 0u) {
       return;
     }
 
-    config_status("Config: update confirmed for " + fanetId + " (session " + response.sessionId.substring(0, 8) + "...)");
+    config_status("Config: update confirmed for " + fanetId);
 
     // If the backend reported more pending configs, loop immediately to send them.
     // Add a short pause so the device has time to finish rebooting (it resets after apply).
     if(response.count <= 1) {
-      config_status("Config: all updates complete for " + fanetId);
+      //config_status("Config: all updates complete for " + fanetId);
       return;
     }
     config_status(String("Config: ") + (response.count - 1) + " more pending, continuing...");
@@ -384,52 +388,33 @@ static String getUniqueDeviceIds(String* deviceIds, size_t maxDevices) {
 }
 
 void config_gs_begin() {
-  s_last_poll_ms = 0;
+  s_last_config_vid = 0;
+  s_last_config_fanet_id = 0;
+  s_last_config_attempt_ms = 0;
   config_status("Config: update service initialized");
 }
 
-void config_gs_poll_devices() {
-  if(WiFi.status() != WL_CONNECTED) {
+void config_gs_try_update(const hwInfoData& info) {
+  if(WiFi.status() != WL_CONNECTED || info.vid == 0) {
     return;
   }
 
-  const uint32_t now = millis();
-  if((now - s_last_poll_ms) < POLL_INTERVAL_MS) {
+  // Debounce: don't query the same device twice within 30 seconds.
+  // This mirrors the OTA logic to avoid redundant backend queries.
+  if(info.vid == s_last_config_vid && info.fanet_id == s_last_config_fanet_id && 
+     (millis() - s_last_config_attempt_ms) < CONFIG_QUERY_DEBOUNCE_MS) {
     return;
   }
 
-  s_last_poll_ms = now;
+  s_last_config_vid = info.vid;
+  s_last_config_fanet_id = info.fanet_id;
+  s_last_config_attempt_ms = millis();
 
-  // Get list of all known devices
-  String deviceIds[MAX_DEVICES * 2];  // Both weather and tracking
-  size_t deviceCount = 0;
-  
-  getUniqueDeviceIds(deviceIds, MAX_DEVICES * 2);
+  char deviceId[16];
+  snprintf(deviceId, sizeof(deviceId), "%02X%04X", info.vid, info.fanet_id);
 
-  // Poll each device for pending configs
-  for(int i = 0; i < MAX_DEVICES; i++) {
-    if(weatherStore[i].timestamp == 0 || weatherStore[i].vid == 0) {
-      continue;
-    }
-    
-    char devId[16];
-    snprintf(devId, sizeof(devId), "%02X%04X", weatherStore[i].vid, weatherStore[i].fanet_id);
-    
-    processConfigUpdate(String(devId));
-    delay(100);  // Small delay between devices
-  }
-  
-  for(int i = 0; i < MAX_DEVICES; i++) {
-    if(trackingStore[i].timestamp == 0 || trackingStore[i].vid == 0) {
-      continue;
-    }
-    
-    char devId[16];
-    snprintf(devId, sizeof(devId), "%02X%04X", trackingStore[i].vid, trackingStore[i].fanet_id);
-    
-    processConfigUpdate(String(devId));
-    delay(100);  // Small delay between devices
-  }
+  // Query backend and transmit any pending configs for this device.
+  processConfigUpdate(String(deviceId), 0);
 }
 
 void config_gs_check_device(const String& deviceId, uint32_t nonce) {
@@ -442,7 +427,7 @@ void config_gs_check_device(const String& deviceId, uint32_t nonce) {
 #else
 
 void config_gs_begin() {}
-void config_gs_poll_devices() {}
-void config_gs_check_device(const String& deviceId) { (void)deviceId; }
+void config_gs_try_update(const hwInfoData& info) { (void)info; }
+void config_gs_check_device(const String& deviceId, uint32_t nonce) { (void)deviceId; (void)nonce; }
 
 #endif

@@ -8,7 +8,10 @@
 #endif
 
 void config_gs_begin();
-void config_gs_poll_devices();
+
+// Try to pull config updates for a device when HW_INFO is received.
+// Similar to ota_gs_try_update, this is event-driven rather than polled cyclically.
+void config_gs_try_update(const hwInfoData& info);
 
 // Immediately check and push pending config for a specific device (e.g. triggered from OTA path)
 // nonce: device nonce from HWInfo announcement; used to validate the device ACK after sending
