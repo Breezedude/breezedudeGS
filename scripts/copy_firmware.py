@@ -12,7 +12,9 @@ def copy_firmware(source, target, env):
         shutil.copyfile(littlefs_path, "littlefs.bin")
 
 def before_build_fs(*args, **kwargs):
-    env.Execute("platformio run --target buildfs")
+    pyexe = env.subst("$PYTHONEXE")
+    pioenv = env.subst("$PIOENV")
+    env.Execute(f'"{pyexe}" -m platformio run --target buildfs --environment {pioenv}')
 
 env.AddPostAction("$BUILD_DIR/firmware.bin", copy_firmware)
 env.AddPostAction("buildprog", before_build_fs)

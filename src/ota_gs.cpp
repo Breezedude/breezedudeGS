@@ -12,8 +12,8 @@
 #include <memory>
 #include <new>
 
-extern SX1262 radio_sx1262;
-extern PhysicalLayer* radio_phy;
+#include "helper.h"
+
 extern volatile bool receivedFlag;
 extern void webconsole_print(String in);
 
@@ -335,15 +335,7 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
 }
 
 static void applyRadioMode(bool fastMode) {
-  radio_phy->standby();
-  radio_phy->setFrequency(OTA_GS_FAST_FREQ_MHZ);
-  radio_sx1262.setBandwidth((float)(fastMode ? OTA_GS_FAST_BW_KHZ : 250));
-  radio_sx1262.setSpreadingFactor(fastMode ? OTA_GS_FAST_SF : 7);
-  radio_sx1262.setCodingRate(fastMode ? OTA_GS_FAST_CR : 5);
-  radio_sx1262.setSyncWord(fastMode ? OTA_GS_FAST_SYNCWORD : 0xF1);
-  radio_sx1262.setPreambleLength(fastMode ? OTA_GS_FAST_PREAMBLE : 12);
-  receivedFlag = false;
-  radio_phy->startReceive();
+  configure_lora_radio(fastMode);
 }
 
 static bool sendFanetAck(const OtaAnnouncement& ann) {

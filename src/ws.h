@@ -45,6 +45,9 @@ static const uint32_t FORWARD_SEND_MIN_INTERVAL_MS = 20;
 
 static String internetStatusCache = "not avaliable";
 static uint32_t internetStatusLastCheckMs = 0;
+static uint32_t internetLastOkMs = 0;
+static bool internetEverConnected = false;
+static const uint32_t INTERNET_WATCHDOG_MS = 5UL * 60UL * 1000UL; // 5 min
 
 // Queue outbound HTTP payloads so packet handling path stays responsive.
 bool enqueue_forward_payload(const String& url, const String& payload) {
@@ -111,8 +114,24 @@ void updateInternetConnectionStatus() {
     http.setTimeout(1200);
     http.begin("http://fanet.breezedude.de/");
     int httpResponseCode = http.GET();
-    internetStatusCache = (httpResponseCode > 0) ? "ok" : "not avaliable";
     http.end();
+
+    if (httpResponseCode > 0) {
+        internetStatusCache = "ok";
+        internetLastOkMs = millis();
+        internetEverConnected = true;
+    } else {
+        internetStatusCache = "not avaliable";
+        // Watchdog: if WiFi is up but internet has been gone for >5 min after
+        // having worked before, the upstream router likely lost internet without
+        // dropping WiFi – reboot to recover.
+        if (internetEverConnected &&
+            (millis() - internetLastOkMs) > INTERNET_WATCHDOG_MS) {
+            Serial.println("[watchdog] Internet lost >5min while WiFi connected – rebooting");
+            delay(100);
+            ESP.restart();
+        }
+    }
 }
 
 
@@ -408,12 +427,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
     if (info->opcode != WS_TEXT) return;
 
-    data[len] = 0;
-    String json = (char*)data;
-    //Serial.println(json);
-
+    // Do NOT write data[len]=0 – the buffer is exactly `len` bytes and
+    // writing past it corrupts the heap.  ArduinoJson accepts (ptr, len).
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, json);
+    DeserializationError error = deserializeJson(doc, (const char*)data, len);
     if (error) {
         client->text("{\"error\":\"Invalid JSON\"}");
         return;
@@ -507,44 +524,59 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     }
 
     else if (strcmp(cmd, "save_wifi") == 0) {
-    Serial.println(json);
+        // Use | "" fallback so missing keys never yield a nullptr that
+        // would crash strcmp / strncpy.
+        const char* new_sta_ssid  = doc["sta_ssid"]   | "";
+        const char* new_sta_pass  = doc["sta_password"] | "";
+        const char* new_ap_ssid   = doc["ap_ssid"]    | "";
+        const char* new_ap_pass   = doc["ap_password"] | "";
+        bool new_keepAP           = doc["keepAP"].as<bool>();
 
-    const char* new_sta_ssid  = doc["sta_ssid"];
-    const char* new_sta_pass  = doc["sta_password"];
-    const char* new_ap_ssid   = doc["ap_ssid"];
-    const char* new_ap_pass   = doc["ap_password"];
-    bool new_keepAP           = doc["keepAP"].as<bool>();;
+        bool staChanged = (strcmp(settings.wifi_ssid, new_sta_ssid) != 0) ||
+                          (strcmp(settings.wifi_password, new_sta_pass) != 0);
+        bool apChanged = (strcmp(settings.ap_ssid, new_ap_ssid) != 0) ||
+                         (strcmp(settings.ap_password, new_ap_pass) != 0);
 
-    // Check if STA SSID changed
-    if (strcmp(settings.wifi_ssid, new_sta_ssid) != 0) {
-        forceReconnectSTA = true;
-        client->text("{\"msg\":\"Connecting to WiFi...\"}");
+        Serial.printf("save_wifi: sta_ssid='%s' keepAP=%s staChanged=%s apChanged=%s\n",
+                      new_sta_ssid,
+                      new_keepAP ? "true" : "false",
+                      staChanged ? "true" : "false",
+                      apChanged ? "true" : "false");
+
+        // Assign values safely
+        strncpy(settings.wifi_ssid, new_sta_ssid, sizeof(settings.wifi_ssid));
+        settings.wifi_ssid[sizeof(settings.wifi_ssid)-1] = '\0';
+
+        strncpy(settings.wifi_password, new_sta_pass, sizeof(settings.wifi_password));
+        settings.wifi_password[sizeof(settings.wifi_password)-1] = '\0';
+
+        strncpy(settings.ap_ssid, new_ap_ssid, sizeof(settings.ap_ssid));
+        settings.ap_ssid[sizeof(settings.ap_ssid)-1] = '\0';
+
+        strncpy(settings.ap_password, new_ap_pass, sizeof(settings.ap_password));
+        settings.ap_password[sizeof(settings.ap_password)-1] = '\0';
+
+        settings.keepAP = new_keepAP;
+        save_preferences();
+
+        if (apChanged) {
+            restartAP = true;
+            client->text("{\"msg\":\"AP settings saved. Restarting AP...\"}");
+        }
+
+        if (staChanged) {
+            forceReconnectSTA = true;
+            client->text("{\"msg\":\"WiFi settings saved. Reconnecting STA...\"}");
+        } else if (WiFi.status() == WL_CONNECTED) {
+            JsonDocument resp;
+            resp["msg"] = String("WiFi connected. IP: ") + WiFi.localIP().toString();
+            String output;
+            serializeJson(resp, output);
+            client->text(output);
+        } else {
+            client->text("{\"msg\":\"WiFi settings saved. STA currently not connected.\"}");
+        }
     }
-
-    // Check if AP SSID or password changed
-    if (strcmp(settings.ap_ssid, new_ap_ssid) != 0 ||
-        strcmp(settings.ap_password, new_ap_pass) != 0) {
-        restartAP = true;
-        client->text("{\"msg\":\"Restarting AP...\"}");
-    }
-
-    // Assign values safely
-    strncpy(settings.wifi_ssid, new_sta_ssid, sizeof(settings.wifi_ssid));
-    settings.wifi_ssid[sizeof(settings.wifi_ssid)-1] = '\0';
-
-    strncpy(settings.wifi_password, new_sta_pass, sizeof(settings.wifi_password));
-    settings.wifi_password[sizeof(settings.wifi_password)-1] = '\0';
-
-    strncpy(settings.ap_ssid, new_ap_ssid, sizeof(settings.ap_ssid));
-    settings.ap_ssid[sizeof(settings.ap_ssid)-1] = '\0';
-
-    strncpy(settings.ap_password, new_ap_pass, sizeof(settings.ap_password));
-    settings.ap_password[sizeof(settings.ap_password)-1] = '\0';
-
-    settings.keepAP = new_keepAP;
-
-    save_preferences();
-}
 
 else if (strcmp(cmd, "wifi_scan") == 0) {
         if (_scanState != ScanState::IDLE) {
@@ -563,10 +595,10 @@ else if (strcmp(cmd, "wifi_scan") == 0) {
 }
 
 else if (strcmp(cmd, "save_settings") == 0) {
-    Serial.println(json);
+    //Serial.println(json);
 
-    const char* new_deviceName = doc["deviceName"];
-    const char* new_aprsServer = doc["aprsServer"];
+    const char* new_deviceName   = doc["deviceName"]   | "";
+    const char* new_aprsServer   = doc["aprsServer"]   | "";
     const char* new_updateBranch = doc["updateBranch"] | "stable";
     bool updateBranchChanged = strcmp(settings.updateBranch, new_updateBranch) != 0;
 

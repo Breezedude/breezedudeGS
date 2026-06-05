@@ -10,7 +10,6 @@
 #include <esp32FOTA.hpp> // https://github.com/chrisjoyce911/esp32FOTA/tree/master
 
 #include <DNSServer.h>
-#include <Update.h>
 #include <time.h>
 
 #include "helper.h"
@@ -19,9 +18,20 @@
 #include "aprs.h"
 #include "ota_gs.h"
 #include "config_gs.h"
+#include "recovery.h"
 //#include "improv_serial.h"
 
 #define SPIFFS LittleFS
+
+#ifndef BREEZEDUDE_RADIO_SX1276
+  #define BREEZEDUDE_RADIO_SX1276 1
+#endif
+#ifndef BREEZEDUDE_RADIO_LLCC68
+  #define BREEZEDUDE_RADIO_LLCC68 1
+#endif
+#ifndef BREEZEDUDE_RADIO_SX1262
+  #define BREEZEDUDE_RADIO_SX1262 1
+#endif
 
 /* This code uses "quick re-define" of SPIFFS to run
    an existing sketch with LittleFS instead of SPIFFS
@@ -38,9 +48,8 @@
 
 #define PIN_LORA_CS 8     // 
 #define PIN_LORA_RESET 12 // 
-#define PIN_LORA_DIO0 11  // 
-#define PIN_LORA_DIO1 14  // 
-#define PIN_LORA_BUSY 13  // 
+#define PIN_LORA_DIO1 14  // PIN_LORA_IRQ/DIO0 on SX1276
+#define PIN_LORA_BUSY 13  // DIO1 on SX1276
 #define LORA_SYNCWORD 0xF1 //SX1262: 0xF4 0x14 https://blog.classycode.com/lora-sync-word-compatibility-between-sx127x-and-sx126x-460324d1787a is handled by RadioLib
 
 #define PIN_LED 35
@@ -72,7 +81,10 @@ void onUpdateBranchChanged() {
   force_update_check = true;
 }
 
+SX1276 radio_sx1276 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, RADIOLIB_NC);
+LLCC68 radio_llcc68 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_BUSY);
 SX1262 radio_sx1262 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_BUSY);
+RadioModuleType lora_module = RADIO_MODULE_NONE;
 PhysicalLayer* radio_phy = nullptr;
 
 volatile bool receivedFlag = false;
@@ -97,6 +109,83 @@ uint32_t fanet_rx_count =0;
 DNSServer dnsServer;
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
+bool littlefsMounted = false;
+
+bool init_lora_radio() {
+#if BREEZEDUDE_RADIO_SX1276
+  if (radio_sx1276.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12, 0) == RADIOLIB_ERR_NONE) {
+    radio_phy = (PhysicalLayer*)&radio_sx1276;
+    lora_module = RADIO_MODULE_SX1276;
+    Serial.println("Radio: LoRa SX1276");
+    return true;
+  }
+#endif
+
+#if BREEZEDUDE_RADIO_LLCC68
+  if (radio_llcc68.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE) {
+    radio_phy = (PhysicalLayer*)&radio_llcc68;
+    lora_module = RADIO_MODULE_LLCC68;
+    radio_phy->setOutputPower(22);
+    static_cast<SX126x*>(radio_phy)->setRegulatorDCDC();
+    Serial.println("Radio: LoRa LLCC68");
+    return true;
+  }
+#endif
+
+#if BREEZEDUDE_RADIO_SX1262
+  if (radio_sx1262.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE) {
+    radio_phy = (PhysicalLayer*)&radio_sx1262;
+    lora_module = RADIO_MODULE_SX1262;
+    radio_phy->setOutputPower(22);
+    static_cast<SX126x*>(radio_phy)->setRegulatorDCDC();
+    Serial.println("Radio: LoRa SX1262");
+    return true;
+  }
+#endif
+
+  radio_phy = nullptr;
+  lora_module = RADIO_MODULE_NONE;
+  return false;
+}
+
+void configure_lora_radio(bool fastMode) {
+  if (radio_phy == nullptr) {
+    return;
+  }
+
+  radio_phy->standby();
+  radio_phy->setFrequency(868.2f);
+
+  switch (lora_module) {
+    case RADIO_MODULE_SX1276:
+      radio_sx1276.setBandwidth((float)(fastMode ? OTA_GS_FAST_BW_KHZ : 250));
+      radio_sx1276.setSpreadingFactor(fastMode ? OTA_GS_FAST_SF : 7);
+      radio_sx1276.setCodingRate(fastMode ? OTA_GS_FAST_CR : 5);
+      radio_sx1276.setSyncWord(fastMode ? OTA_GS_FAST_SYNCWORD : LORA_SYNCWORD);
+      radio_sx1276.setPreambleLength(fastMode ? OTA_GS_FAST_PREAMBLE : 12);
+      break;
+    case RADIO_MODULE_LLCC68:
+      radio_llcc68.setBandwidth((float)(fastMode ? OTA_GS_FAST_BW_KHZ : 250));
+      radio_llcc68.setSpreadingFactor(fastMode ? OTA_GS_FAST_SF : 7);
+      radio_llcc68.setCodingRate(fastMode ? OTA_GS_FAST_CR : 5);
+      radio_llcc68.setSyncWord(fastMode ? OTA_GS_FAST_SYNCWORD : LORA_SYNCWORD);
+      radio_llcc68.setPreambleLength(fastMode ? OTA_GS_FAST_PREAMBLE : 12);
+      break;
+    case RADIO_MODULE_SX1262:
+      radio_sx1262.setBandwidth((float)(fastMode ? OTA_GS_FAST_BW_KHZ : 250));
+      radio_sx1262.setSpreadingFactor(fastMode ? OTA_GS_FAST_SF : 7);
+      radio_sx1262.setCodingRate(fastMode ? OTA_GS_FAST_CR : 5);
+      radio_sx1262.setSyncWord(fastMode ? OTA_GS_FAST_SYNCWORD : LORA_SYNCWORD);
+      radio_sx1262.setPreambleLength(fastMode ? OTA_GS_FAST_PREAMBLE : 12);
+      break;
+    default:
+      break;
+  }
+
+  receivedFlag = false;
+  radio_phy->startReceive();
+}
+
 
 extern weatherData weatherStore[MAX_DEVICES];
 extern trackingData trackingStore[MAX_DEVICES];
@@ -104,9 +193,14 @@ extern trackingData trackingStore[MAX_DEVICES];
 bool wifiConnected = false;
 unsigned long wifiLastAttempt = 0;
 const unsigned long wifiRetryInterval = 10000; // retry every 10 sec
-bool forceReconnectSTA = false;
+// Start with an immediate STA connect attempt right after boot.
+bool forceReconnectSTA = true;
 bool restartAP = false;
-bool wifiGaveUp = false; // true after connect_error_count >= 3, prevents repeated disconnect calls
+bool wifiGaveUp = false; // kept for ABI compat, no longer used in logic
+volatile bool otaUploadInProgress = false;
+volatile bool otaUploadRejected = false;
+
+static HardwareSerial debugUart0(0);
 
 static const size_t WEB_CONSOLE_HISTORY_SIZE = 20;
 struct WebConsoleEntry { time_t ts; String msg; };
@@ -259,6 +353,10 @@ void setDeviceName(uint8_t vid, uint16_t fanet_id, String name) {
 
 
 void handle_fanet(){
+  if (radio_phy == nullptr) {
+    return;
+  }
+
   if(receivedFlag) {
     receivedFlag = false;
       
@@ -317,8 +415,21 @@ void handle_fanet(){
       memset(name,'\0', numBytes-3);
       memcpy(name, &byteArr[4], numBytes-4);
       setDeviceName(header->vendor, header->address, name);
-      if(settings.sendAPRS && aprs.connected()){
-        aprs.sendNameData(FANET2String(header->vendor, header->address),name,radio_phy->getSNR());
+      // filter forwarded duplicates (3s window per device)
+      static struct { uint8_t vid; uint16_t fid; uint32_t last_send; } nameDedup[MAX_DEVICES] = {};
+      uint32_t now_ms = millis();
+      int slot = -1, free_slot = -1;
+      for(int i = 0; i < MAX_DEVICES; i++){
+        if(nameDedup[i].last_send && nameDedup[i].vid == header->vendor && nameDedup[i].fid == header->address){ slot = i; break; }
+        if(!nameDedup[i].last_send && free_slot < 0) free_slot = i;
+      }
+      bool name_is_dup = (slot >= 0) && (now_ms - nameDedup[slot].last_send < 3000);
+      if(!name_is_dup){
+        int use = (slot >= 0) ? slot : free_slot;
+        if(use >= 0) nameDedup[use] = {header->vendor, header->address, now_ms};
+        if(settings.sendAPRS && aprs.connected()){
+          aprs.sendNameData(FANET2String(header->vendor, header->address),name,radio_phy->getSNR());
+        }
       }
     }
     else if(header->type == FANET_PCK_TYPE_HW_INFO){
@@ -338,15 +449,18 @@ void handle_fanet(){
       */
 
       if(unpack_hwinfo_t0a(byteArr, numBytes, &hi, radio_phy->getRSSI(), radio_phy->getSNR())){
-        storeHwInfoData(hi);
-        ws.textAll(packHwInfo(&hi));
-        if(wifiConnected && settings.sendBreezedude){
-          send_hwinfo_to_frontend(&hi);
-        }
-        // Only HW_INFO type 2 guarantees the sender remains in RX mode afterwards.
-        if(hi.rawAfterBuildDate[0] == 2) {
-          ota_gs_try_update(hi);
-          config_gs_try_update(hi);
+        int hi_idx = storeHwInfoData(hi);
+        if(millis() - hwInfoStore[hi_idx].last_send > 3000){ // filter forwarded duplicates
+          hwInfoStore[hi_idx].last_send = millis();
+          ws.textAll(packHwInfo(&hi));
+          if(wifiConnected && settings.sendBreezedude){
+            send_hwinfo_to_frontend(&hi);
+          }
+          // Only HW_INFO type 2 guarantees the sender remains in RX mode afterwards.
+          if(hi.rawAfterBuildDate[0] == 2) {
+            ota_gs_try_update(hi);
+            config_gs_try_update(hi);
+          }
         }
       }
     }
@@ -392,71 +506,8 @@ void server_setup(){
   server.onNotFound([redirectUrl](AsyncWebServerRequest *request) {
       request->redirect(redirectUrl);
   });
-  
-  server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request){
-        bool shouldReboot = !Update.hasError();
-        AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", shouldReboot ? "Update Success. Rebooting..." : "Update Failed!");
-        response->addHeader("Connection", "close");
-        request->send(response);
 
-        Serial.printf("content: %lu\r\n", request->contentLength());
-
-        if (shouldReboot) {
-        webconsole_print("update upload finished successfully. Rebooting...");
-            ws.textAll("{\"otaStatus\":\"Update complete. Rebooting...\"}");
-            Serial.println("Rebooting");
-            ws.textAll("{\"disconnect\":\"true\"}");
-            delay(300);
-            ESP.restart();
-      } else {
-        webconsole_print("update upload failed. See serial log for details.");
-        }
-    }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
-
-        size_t uploaded = index + len;
-        size_t uploadSize = request->contentLength();
-        int progress = ((uploaded * 100) / uploadSize)/5;
-        static int last_perc = 0;
-
-        if (!index){
-            int type = 0; // U_FS, see Update.begin(...)
-            if(filename == "littlefs.bin"){
-              Serial.println("Updating LittleFS");
-              size_t fsPartitionSize = getLittleFSPartitionSize();
-              if(uploadSize > fsPartitionSize)
-              type = 100; // U_SPIFFS
-            }
-            Serial.printf("Update Start: %s, %lu\n", filename.c_str(), uploadSize);
-          webconsole_print("update upload started: " + filename + " (" + String(uploadSize) + " bytes)");
-            if (!Update.begin(UPDATE_SIZE_UNKNOWN, type)){
-                Update.printError(Serial);
-            webconsole_print("update init failed. See serial log for details.");
-            }
-        }
-        if (!Update.hasError()){
-
-          if(last_perc != progress){
-            last_perc = progress;
-            String msg = "{\"otaStatus\":\"" + String(progress*5) + "%\"}";
-            //ws.textAll(msg);
-            Serial.println(msg);
-          webconsole_print("update upload progress: " + String(progress*5) + "%");
-          }
-            if (Update.write(data, len) != len){
-                Update.printError(Serial);
-            webconsole_print("update write failed. See serial log for details.");
-            }
-        }
-        if (final){
-            if (Update.end(true)){
-                Serial.printf("Update Success: %uB\n", index + len);
-            webconsole_print("update image validated and written: " + String(index + len) + " bytes");
-            } else {
-                Update.printError(Serial);
-            webconsole_print("update finalize failed. See serial log for details.");
-            }
-        }
-    });
+  registerRecoveryRoutes(server, ws, littlefsMounted, otaUploadInProgress, otaUploadRejected);
 }
 
 String normalize_online_version(const String& versionRaw) {
@@ -492,7 +543,7 @@ void check_update(){
   if (force_update_check || (last_updatecheck == 0) || (millis() - last_updatecheck > 6*3600*1000)){
     force_update_check = false;
     last_updatecheck = millis();
-    webconsole_print("Checking firmware updates (branch: " + String(getFotaBranchName()) + ")");
+    webconsole_print("Checking GS firmware updates (branch: " + String(getFotaBranchName()) + ")");
     bool updatedNeeded = activeFota->execHTTPcheck();
     char buff[16];
     memset(buff,'\0', sizeof(buff));
@@ -513,11 +564,10 @@ void check_update(){
       }
     } else {
       Serial.printf("Firmware Current Version: %s, Online Version %s\r\n", fw_version, onlineVersionDisplay.c_str());
-      webconsole_print("Firmware up to date: " + fw_version + " (online " + onlineVersionDisplay + ")");
+      webconsole_print("GS Firmware up to date: " + fw_version + " (online " + onlineVersionDisplay + ")");
     }
   }
 }
-
 
 void run_wifi() {
   static uint32_t lastcheck = 0;
@@ -564,13 +614,16 @@ void run_wifi() {
     // STA connection handling
     if(forceReconnectSTA){
       connect_error_count = 0;
-      wifiGaveUp = false;
     }
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED && !otaUploadInProgress) {
       wifiConnected = false;
-        if (forceReconnectSTA || ((millis() - wifiLastAttempt >= wifiRetryInterval)&& connect_error_count <3)) {
+      // After 3 quick retries (every 10 s) back off to one attempt per 60 s;
+      // never stop retrying – a brief router restart should not require a
+      // manual reboot of the ground station.
+      const unsigned long retryInterval = (connect_error_count < 3) ? wifiRetryInterval : 60000UL;
+        if (forceReconnectSTA || (millis() - wifiLastAttempt >= retryInterval)) {
             wifiLastAttempt = millis();
-            connect_error_count ++;
+            if (connect_error_count < 3) connect_error_count++;
             forceReconnectSTA = false;
             Serial.println("Attempting WiFi connection to SSID: " + String(settings.wifi_ssid));
             WiFi.begin(settings.wifi_ssid, settings.wifi_password);
@@ -579,22 +632,21 @@ void run_wifi() {
             //WiFi.setAutoReconnect(false);
             //WiFi.setTxPower(WIFI_POWER_17dBm);
         }
-        if (connect_error_count >= 3 && !wifiGaveUp) {
-          wifiGaveUp = true;
-          WiFi.disconnect(false);
-          WiFi.enableAP(true);
-          webconsole_print("WiFi: gave up after 3 attempts, will retry in 1h");
-        }
-        if (millis() - wifiLastAttempt > 1000*60*60) {
-          connect_error_count = 0; // retry every hour
-          wifiGaveUp = false;
-        }
-    } else {
+    } else if (!otaUploadInProgress) {
         if (!wifiConnected) {
             wifiConnected = true;
             connect_error_count = 0;
-            wifiGaveUp = false;
-            Serial.println("Connected to WiFi, IP: " + WiFi.localIP().toString());
+        String connectedMsg = "Connected to WiFi, IP: " + WiFi.localIP().toString();
+        Serial.println(connectedMsg);
+        webconsole_print(connectedMsg);
+
+        JsonDocument doc;
+        doc["msg"] = connectedMsg;
+        doc["sta_status"] = "connected";
+        doc["sta_ip"] = WiFi.localIP().toString();
+        String text;
+        serializeJson(doc, text);
+        ws.textAll(text);
         }
         updateInternetConnectionStatus();
         check_update();
@@ -606,7 +658,11 @@ void run_wifi() {
 if(!server_started){
     ws.onEvent(onWsEvent);
     server.addHandler(&ws);
-    server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+    if (littlefsMounted && (LittleFS.exists("/index.html") || LittleFS.exists("/index.html.gz"))) {
+      server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+    } else {
+      Serial.println("LittleFS web UI not available - serving fallback updater page");
+    }
     server_setup();
     server.begin();
     ws_init(&ws);
@@ -619,6 +675,15 @@ void load_preferences(){
   preferences.begin("gs_config", true);
   if (preferences.isKey("Settings")) {
     size_t loaded = preferences.getBytes("Settings", &settings, sizeof(settings));
+    // If the stored blob is a different size (struct changed across firmware
+    // updates), discard it and keep the safe default-constructed values.
+    if (loaded != sizeof(settings)) {
+      Serial.printf("load_preferences: size mismatch (got %u, expected %u) – using defaults\n",
+                    (unsigned)loaded, (unsigned)sizeof(settings));
+      preferences.end();
+      settings = Settings{};
+      return;
+    }
     settings.updateBranch[sizeof(settings.updateBranch) - 1] = '\0';
     if (strcmp(settings.updateBranch, "stable") != 0 && strcmp(settings.updateBranch, "beta") != 0) {
       strncpy(settings.updateBranch, "stable", sizeof(settings.updateBranch));
@@ -634,13 +699,27 @@ void save_preferences(){
   preferences.end();
 }
 
+static void initSerialOutputs() {
+  Serial.begin(115200);
+  Serial.setDebugOutput(true);
+  debugUart0.begin(115200);
+  debugUart0.setDebugOutput(true);
+
+  // Keep both outputs active so the same firmware image works on
+  // native USB CDC boards and CP2102 UART-USB adapter boards.
+  Serial.println("[serial] debug output on USB CDC + UART0");
+  debugUart0.println("[serial] debug output on USB CDC + UART0");
+}
+
 void setup() {
     pinMode(PIN_USERBTN,INPUT_PULLUP);
     pinMode(PIN_LED,OUTPUT);
-    Serial.begin(115200);
-    if (!LittleFS.begin()) {
-        Serial.println("LittleFS Mount Failed");
-        return;
+    initSerialOutputs();
+
+    migratePartitionLayoutIfNeeded();
+    littlefsMounted = LittleFS.begin();
+    if (!littlefsMounted) {
+      Serial.println("LittleFS Mount Failed - fallback updater page enabled");
     }
 
     Serial.println("Press User button for reset");
@@ -669,21 +748,18 @@ void setup() {
       trackingStore[i].timestamp = 0;
     }
 
-    
-  if(radio_sx1262.begin(868.2, 250, 7, 5, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
-      // NiceRF SX1262 issue https://github.com/jgromes/RadioLib/issues/689
-      radio_phy = (PhysicalLayer*)&radio_sx1262;
-      radio_phy->setPacketReceivedAction(setFlag);
-      int state = radio_phy->startReceive();
-      if (state == RADIOLIB_ERR_NONE) {
-      } else {
-        Serial.print(F("failed, code "));
-        Serial.println(state);
-        while (true) { delay(10); }
-      }
-    }  else {
-        Serial.print(F("Radio not found"));
+  if(!init_lora_radio()){
+        Serial.println("Radio not found - continuing without LoRa");
+  } else {
+    radio_phy->setPacketReceivedAction(setFlag);
+    int state = radio_phy->startReceive();
+    if (state != RADIOLIB_ERR_NONE) {
+          Serial.print(F("radio startReceive failed, code "));
+      Serial.println(state);
+      radio_phy = nullptr;
+      receivedFlag = false;
     }
+  }
 
   WiFi.setHostname(settings.deviceName);
 
@@ -727,7 +803,7 @@ void loop() {
 
   handle_fanet();
   //handle_dummy();
-  if(settings.sendAPRS){
+  if(settings.sendAPRS && !otaUploadInProgress){
     aprs.run(wifiConnected);
   }
 }

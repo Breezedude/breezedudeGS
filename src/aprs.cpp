@@ -405,28 +405,8 @@ void Aprs::setStatusData(float pressure, float temp,float hum, float battVoltage
 }
 
 void Aprs::sendReceiverStatus(String sTime){
-    String sStatus = _user + ">" + aprsTag + ",TCPIP*,qAC," + _servername + ":>" + sTime + "h " + _version + " CPU:" + String(_BattPercent/100.0,1) + " ";
-    if (!isnan(_alt)){
-        sStatus += String(_alt,0) + "m "; //send altitude
-    }
-    if (!isnan(_Pressure)){
-        sStatus += String(_Pressure,1) + "hPa "; //send pressure
-    }
-    if (!isnan(_Temp)){
-        if (_Temp >= 0){
-            sStatus += "+";
-        }
-        sStatus += String(_Temp,1) + "C "; //send Temp
-    }
-    if (!isnan(_Hum)){
-        sStatus += String(_Hum,0) + "% "; //send humidity
-    }
-    if (!isnan(_BattVoltage)){
-        sStatus += String(_BattVoltage,2) + "V "; //send batt-voltage
-    }
-    sStatus += "\r\n";
-    
-   
+    String sStatus = _user + ">" + aprsTag + ",TCPIP*,qAC," + _servername + ":>" + sTime + "h BDGS: " +  _version + " UP:" + String(millis() / 60000) + "min\r\n";
+
     client->print(sStatus);
     aprsconsole_print(sStatus);
     client->flush();

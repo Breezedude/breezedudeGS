@@ -8,8 +8,8 @@
 #include <ArduinoJson.h>
 #include <RadioLib.h>
 
-extern SX1262 radio_sx1262;
-extern PhysicalLayer* radio_phy;
+#include "helper.h"
+
 extern volatile bool receivedFlag;
 extern void webconsole_print(String in);
 extern weatherData weatherStore[MAX_DEVICES];

@@ -3,6 +3,22 @@ const weatherStations = new Map();
 const liveTracking = new Map();
 const stationHwInfo = new Map(); // stationId -> { raw, merged }
 const MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+const HIDDEN_STATION_VIDS = new Set([0x66, 0x11]);
+
+function isHiddenStationVid(vid) {
+  return HIDDEN_STATION_VIDS.has(Number(vid));
+}
+
+function removeWeatherStationById(stationId) {
+  const row = weatherStations.get(stationId);
+  if (row) {
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains('hwinfo-row')) next.remove();
+    row.remove();
+    weatherStations.delete(stationId);
+  }
+  stationHwInfo.delete(stationId);
+}
 
 const SENSOR_TYPE_NAMES = [
   'invalid',
@@ -120,6 +136,36 @@ function toggleHwInfoRow(stationId, dataRow) {
     : '<div class="hwinfo-grid"><div class="hwinfo-row-item"><span class="hwinfo-label">No HW info received yet</span></div></div>';
   detailRow.appendChild(td);
   dataRow.parentNode.insertBefore(detailRow, dataRow.nextSibling);
+}
+
+const WEATHER_TABLE_COLUMNS = [
+  'id', 'name', 'dist', 'temp', 'windDir', 'windSpd', 'gust',
+  'humidity', 'pressure', 'soc', 'rssi', 'lastSeen'
+];
+
+function setupWeatherRow(rowData) {
+  const row = weatherStations.get(rowData.id);
+  if (!row) return;
+
+  if (!row.dataset.hwExpandSetup) {
+    row.dataset.hwExpandSetup = '1';
+    const idCell = row.querySelector('[data-key="id"]');
+    if (idCell) {
+      idCell.classList.add('hw-expandable');
+      idCell.title = 'Click to show/hide HW info';
+      idCell.addEventListener('click', () => toggleHwInfoRow(rowData.id, row));
+    }
+  }
+
+  if (stationHwInfo.has(rowData.id)) {
+    const idCell = row.querySelector('[data-key="id"]');
+    if (idCell) idCell.classList.add('hw-has-data');
+  }
+}
+
+function upsertWeatherRow(rowData) {
+  upsertRow('weatherTable', rowData, weatherStations, WEATHER_TABLE_COLUMNS);
+  setupWeatherRow(rowData);
 }
 
 const MOBILE_LABELS = {
@@ -708,7 +754,6 @@ function initWebSocket() {
       }
 
     const data = JSON.parse(event.data);
-    console.log(data)
 
     if(data.error){
       const scanBtn = document.getElementById("wifiScanBtn");
@@ -744,8 +789,14 @@ function initWebSocket() {
     }
     else if (data.weather && Array.isArray(data.weather)) {
       data.weather.forEach(station => {
+          const stationId = station.vid.toString(16).toUpperCase().padStart(2, "0") + station.fanet_id.toString(16).toUpperCase().padStart(4, "0");
+          if (isHiddenStationVid(station.vid)) {
+            removeWeatherStationById(stationId);
+            return;
+          }
+
           const rowData = {
-              id: (station.vid.toString(16).toUpperCase().padStart(2, "0") + station.fanet_id.toString(16).toUpperCase().padStart(4, "0")),
+              id: stationId,
               name: station.name,
               lat: station.lat !== undefined ? station.lat.toFixed(5) : "-",
               lon: station.lon !== undefined ? station.lon.toFixed(5) : "-",
@@ -765,22 +816,7 @@ function initWebSocket() {
             rowData.lastSeen = Date.now();
           }
 
-          upsertRow("weatherTable", rowData, weatherStations, [
-              "id", "name","dist", "temp", "windDir", "windSpd", "gust",
-              "humidity", "pressure", "soc", "rssi", "lastSeen" //  "lat", "lon", 
-          ]);
-
-          // Set up click handler on ID cell for hw_status expand/collapse
-          const row = weatherStations.get(rowData.id);
-          if (row && !row.dataset.hwExpandSetup) {
-            row.dataset.hwExpandSetup = '1';
-            const idCell = row.querySelector('[data-key="id"]');
-            if (idCell) {
-              idCell.classList.add('hw-expandable');
-              idCell.title = 'Click to show/hide HW info';
-              idCell.addEventListener('click', () => toggleHwInfoRow(rowData.id, row));
-            }
-          }
+          upsertWeatherRow(rowData);
       }); // {"weather":[{"vid":189,"fanet_id":50097,"name":"","rssi":-103,"snr":-9,"lat":47.74839,"lon":12.25035,"tLastMsg":1760421160,"temp":2,"wHeading":237.6563,"wSpeed":4.4,"wGust":8.6,"humidity":99.2,"baro":1028,"charge":93.33334}]}
 
     } else if (data.tracking && Array.isArray(data.tracking)) {
@@ -812,6 +848,17 @@ function initWebSocket() {
     }
     else if (data.hwinfo && Array.isArray(data.hwinfo)) {
       data.hwinfo.forEach(hi => {
+        const fanetIdHex = Number(hi.fanet_id || 0).toString(16).toUpperCase().padStart(4, '0');
+        if (isHiddenStationVid(hi.vid)) {
+          const hiddenStationId = hi.vid.toString(16).toUpperCase().padStart(2, "0") + fanetIdHex;
+          removeWeatherStationById(hiddenStationId);
+          return;
+        }
+        const decodeType = Number.isFinite(Number(hi.decode_type))
+          ? Number(hi.decode_type)
+          : Number((Array.isArray(hi.rawBytes) && hi.rawBytes.length > 0) ? hi.rawBytes[0] : -1);
+        console.log(`HWSTATUS fanet_id=${fanetIdHex} decode_type=${decodeType}`);
+
         const stationId = hi.vid.toString(16).toUpperCase().padStart(2, "0") +
                           hi.fanet_id.toString(16).toUpperCase().padStart(4, "0");
         const decoded = decodeHwInfoDebug(hi.rawBytes || []);
@@ -824,6 +871,28 @@ function initWebSocket() {
         const merged = Object.assign({}, prev ? prev.merged : {}, decoded, { newestHwTs });
         stationHwInfo.set(stationId, { raw: hi, merged });
 
+        if (!weatherStations.has(stationId)) {
+          const lastSeen = newestHwTs > 0 ? newestHwTs * 1000 : Date.now();
+          upsertWeatherRow({
+            id: stationId,
+            name: merged.sensor_type_text || '-',
+            lat: '-',
+            lon: '-',
+            dist: '-',
+            temp: '-',
+            windDir: '-',
+            windSpd: '-',
+            gust: '-',
+            humidity: '-',
+            pressure: '-',
+            soc: '-',
+            rssi: hi.rssi !== undefined ? hi.rssi + ' dBm' : '-',
+            lastSeen
+          });
+        } else {
+          setupWeatherRow({ id: stationId });
+        }
+
         // Update open detail row if visible
         const dataRow = weatherStations.get(stationId);
         if (dataRow) {
@@ -832,9 +901,6 @@ function initWebSocket() {
             const td = detailRow.querySelector('td');
             if (td) td.innerHTML = buildHwInfoHtml(hi, merged);
           }
-          // Mark ID cell with indicator that hw info is available
-          const idCell = dataRow.querySelector('[data-key="id"]');
-          if (idCell) idCell.classList.add('hw-has-data');
         }
       });
     }
