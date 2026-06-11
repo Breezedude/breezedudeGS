@@ -60,7 +60,8 @@ body {
 
 
     .section-content input[type="text"],
-    .section-content input[type="number"] {
+    .section-content input[type="number"],
+    .section-content input[type="time"] {
       width: 99%;
       padding: 5px;
       margin: 5px 0;
@@ -254,6 +255,7 @@ body {
     /* --- INPUTS & TEXTBOXES --- */
     input[type="text"],
     input[type="number"],
+    input[type="time"],
     input[type="password"],
     input[type="file"] {
       box-sizing: border-box;
@@ -268,6 +270,32 @@ body {
       font-family: Arial, sans-serif;
       font-size: 14px;
       transition: background-color 0.3s, color 0.3s, border-color 0.3s;
+    }
+
+    input[type="time"] {
+      appearance: none;
+      -webkit-appearance: none;
+      min-width: 0;
+      color-scheme: light;
+    }
+
+    [data-theme="dark"] input[type="time"] {
+      color-scheme: dark;
+    }
+
+    input[type="time"]::-webkit-date-and-time-value {
+      text-align: left;
+      min-height: 32px;
+    }
+
+    input[type="time"]::-webkit-calendar-picker-indicator {
+      cursor: pointer;
+      opacity: 0.72;
+    }
+
+    [data-theme="dark"] input[type="time"]::-webkit-calendar-picker-indicator {
+      filter: invert(1) brightness(0.9);
+      opacity: 0.82;
     }
 
     input::placeholder {
@@ -521,6 +549,7 @@ body {
     /* Inputs inside form-cards don't need extra width/margin overrides */
     .form-card input[type="text"],
     .form-card input[type="number"],
+    .form-card input[type="time"],
     .form-card input[type="password"] {
       margin: 0;
     }

@@ -216,6 +216,46 @@ bool isRequiredSetupComplete() {
     return hasRequiredSetupValues(settings.deviceName, settings.latitude, settings.longitude);
 }
 
+String formatMinutesAsTime(uint16_t totalMinutes) {
+    char buffer[6];
+    uint16_t normalized = totalMinutes % (24 * 60);
+    snprintf(buffer, sizeof(buffer), "%02u:%02u", normalized / 60, normalized % 60);
+    return String(buffer);
+}
+
+uint16_t parseTimeToMinutes(const JsonVariantConst& value, uint16_t fallbackMinutes) {
+    if (value.isNull()) {
+        return fallbackMinutes;
+    }
+
+    String text;
+    if (value.is<const char*>()) {
+        text = String(value.as<const char*>());
+    } else if (value.is<String>()) {
+        text = value.as<String>();
+    } else {
+        return fallbackMinutes;
+    }
+
+    text.trim();
+    if (text.length() != 5 || text[2] != ':') {
+        return fallbackMinutes;
+    }
+
+    if (!isdigit((unsigned char)text[0]) || !isdigit((unsigned char)text[1]) ||
+        !isdigit((unsigned char)text[3]) || !isdigit((unsigned char)text[4])) {
+        return fallbackMinutes;
+    }
+
+    int hours = (text[0] - '0') * 10 + (text[1] - '0');
+    int minutes = (text[3] - '0') * 10 + (text[4] - '0');
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+        return fallbackMinutes;
+    }
+
+    return (uint16_t)(hours * 60 + minutes);
+}
+
 
 
 String getFormattedUptime(uint32_t uptimeSeconds) {
@@ -466,6 +506,15 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         resp["update_available"] = update_available;
         resp["update_version"] = update_available_version;
         resp["fanet_rx"] = fanet_rx_count;
+        if (settings.batteryPowered) {
+            extern float getBatteryVoltage();
+            float batteryVoltage = getBatteryVoltage();
+            if (!isnan(batteryVoltage)) {
+                char batteryText[10];
+                snprintf(batteryText, sizeof(batteryText), "%.2f V", batteryVoltage);
+                resp["batteryVoltage"] = batteryText;
+            }
+        }
         String output;
         serializeJson(resp, output);
         client->text(output);
@@ -477,6 +526,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         resp["lon"] = settings.longitude;
         resp["lat"] = settings.latitude;
         resp["elevation"] = settings.elevation;
+        resp["batteryPowered"] = settings.batteryPowered;
+        resp["sleepScheduleEnabled"] = settings.sleepScheduleEnabled;
+        resp["sleepOffTime"] = formatMinutesAsTime(settings.sleepOffMinutes);
+        resp["sleepOnTime"] = formatMinutesAsTime(settings.sleepOnMinutes);
         resp["sendAPRS"] = settings.sendAPRS;
         resp["aprsServer"] = settings.aprsServer;
         resp["aprsPort"] = settings.aprsPort;
@@ -600,7 +653,15 @@ else if (strcmp(cmd, "save_settings") == 0) {
     const char* new_deviceName   = doc["deviceName"]   | "";
     const char* new_aprsServer   = doc["aprsServer"]   | "";
     const char* new_updateBranch = doc["updateBranch"] | "stable";
+    String sleepOffRaw = doc["sleepOffTime"].isNull() ? String("") : String(doc["sleepOffTime"].as<const char*>());
+    String sleepOnRaw = doc["sleepOnTime"].isNull() ? String("") : String(doc["sleepOnTime"].as<const char*>());
     bool updateBranchChanged = strcmp(settings.updateBranch, new_updateBranch) != 0;
+
+    Serial.printf("save_settings: batt=%s sleepEnabled=%s off='%s' on='%s'\n",
+                  doc["batteryPowered"].as<bool>() ? "true" : "false",
+                  doc["sleepScheduleEnabled"].as<bool>() ? "true" : "false",
+                  sleepOffRaw.c_str(),
+                  sleepOnRaw.c_str());
 
     // Assign strings safely
     strncpy(settings.deviceName, new_deviceName, sizeof(settings.deviceName));
@@ -613,6 +674,15 @@ else if (strcmp(cmd, "save_settings") == 0) {
     settings.longitude     = doc["lon"].as<float>();
     settings.latitude      = doc["lat"].as<float>();
     settings.elevation     = doc["elevation"].as<int>();
+    settings.batteryPowered = doc["batteryPowered"].as<bool>();
+    settings.sleepScheduleEnabled = settings.batteryPowered && doc["sleepScheduleEnabled"].as<bool>();
+    settings.sleepOffMinutes = parseTimeToMinutes(doc["sleepOffTime"], settings.sleepOffMinutes);
+    settings.sleepOnMinutes = parseTimeToMinutes(doc["sleepOnTime"], settings.sleepOnMinutes);
+    Serial.printf("save_settings parsed: off=%u (%s) on=%u (%s)\n",
+                  settings.sleepOffMinutes,
+                  formatMinutesAsTime(settings.sleepOffMinutes).c_str(),
+                  settings.sleepOnMinutes,
+                  formatMinutesAsTime(settings.sleepOnMinutes).c_str());
     bool requiredSetupComplete = hasRequiredSetupValues(settings.deviceName, settings.latitude, settings.longitude);
     bool requestedSendAprs = doc["sendAPRS"].as<bool>();
     bool requestedSendBreezedude = doc["sendBreezedude"].as<bool>();

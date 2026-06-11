@@ -404,8 +404,26 @@ void Aprs::setStatusData(float pressure, float temp,float hum, float battVoltage
     _BattPercent = battPercent;
 }
 
-void Aprs::sendReceiverStatus(String sTime){
-    String sStatus = _user + ">" + aprsTag + ",TCPIP*,qAC," + _servername + ":>" + sTime + "h BDGS: " +  _version + " UP:" + String(millis() / 60000) + "min\r\n";
+void Aprs::setBattVoltage(float battVoltage) {
+    _BattVoltage = battVoltage;
+}
+
+String Aprs::buildReceiverStatusBody(const String& note) {
+    String body = "BDGS:" + _version + " UP:" + String(millis() / 60000) + "min";
+    if (!isnan(_BattVoltage)) {
+        char battBuf[16];
+        snprintf(battBuf, sizeof(battBuf), " B:%.2fV", _BattVoltage);
+        body += battBuf;
+    }
+    if (note.length() > 0) {
+        body += " ";
+        body += note;
+    }
+    return body;
+}
+
+void Aprs::sendReceiverStatus(String sTime, const String& note){
+    String sStatus = _user + ">" + aprsTag + ",TCPIP*,qAC," + _servername + ":>" + sTime + "h " + buildReceiverStatusBody(note) + "\r\n";
 
     client->print(sStatus);
     aprsconsole_print(sStatus);
@@ -414,6 +432,23 @@ void Aprs::sendReceiverStatus(String sTime){
     
     if (initOk < INIT_FULL) initOk = INIT_FULL; //now we can send, because we have sent GPS-Position
     log_i("%s",sStatus.c_str());
+}
+
+bool Aprs::sendSystemStatus(const String& note) {
+    if (!aprs_connected || !GPSOK) {
+        return false;
+    }
+
+    String sTime = getActTimeString();
+    if (sTime.length() == 0) {
+        return false;
+    }
+
+    if (initOk < INIT_REGISTERED) {
+        sendReceiverBeacon(sTime);
+    }
+    sendReceiverStatus(sTime, note);
+    return true;
 }
 
 void Aprs::sendReceiverBeacon(String sTime){
@@ -488,7 +523,7 @@ void Aprs::sendStatus(uint32_t tAct){
         if (((tAct - tStatus) >= 5000) && (tStatus != 0)){
             String sTime = getActTimeString();
             if (sTime.length() > 0){
-                sendReceiverStatus(sTime);
+                sendReceiverStatus(sTime, "");
             }
             tStatus = 0;
         }

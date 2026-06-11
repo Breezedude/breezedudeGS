@@ -45,6 +45,7 @@ public:
   void setClient(Client *_client);
   void setBattVoltage(float battVoltage);
   void setStatusData(float pressure, float temp,float hum, float battVoltage,uint8_t battPercent);
+  bool sendSystemStatus(const String& note = "");
   bool connected(){return aprs_connected;};
   void setAprsServer(String server, uint32_t port);
 
@@ -56,11 +57,12 @@ private:
     void readClient();
     void checkLine(String line);
     void sendStatus(uint32_t tAct);
-    void sendReceiverStatus(String sTime);    
+    void sendReceiverStatus(String sTime, const String& note = "");
     void sendReceiverBeacon(String sTime);
     String getActTimeString();
     String getActTimeString(time_t timestamp);
     String getTimeStringFromTimestamp(time_t timestamp);
+    String buildReceiverStatusBody(const String& note);
     //uint8_t getSenderDetails(bool onlinetracking,aircraft_t aircraftType,uint8_t addressType);
     uint8_t getSenderDetails(bool OnlineTracking, aircraft_t aircraftType);
     String getOrigin(uint8_t addressType);

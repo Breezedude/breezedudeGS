@@ -129,8 +129,9 @@
 
       <div class="form-card form-card--full">
         <label class="checkbox-label">
-          <input type="checkbox" id="keepAP" name="keepAP"> Keep the Access Point active even when connected to the WiFi network
+          <input type="checkbox" id="keepAP" name="keepAP" onchange="checkBatteryApWarning()"> Keep the Access Point active even when connected to the WiFi network
         </label>
+        <small id="batteryApWarning" style="display:none; color: #e67e22; margin-top:4px; display:none;">&#9888; Keeping AP active nearly doubles power consumption (+50mA). Not recommended when battery-powered.</small>
       </div>
 
     </div>
@@ -163,6 +164,29 @@
       <div class="form-card form-card--full">
         <span class="info-label">Elevation (MSL)</span>
         <input type="number" step="any" id="elevation" name="elevation" placeholder="Elevation (MSL)">
+      </div>
+
+      <div class="form-card form-card--full">
+        <label class="checkbox-label">
+          <input type="checkbox" id="batteryPowered" name="batteryPowered" onchange="toggleBatteryModeUi()"> Battery-powered
+        </label>
+        <small id="batteryApWarningSettings" style="display:none; color: #e67e22; margin-top:4px;">&#9888; "Keep AP active" is still enabled in WiFi section. Not recommended when battery-powered.</small>
+      </div>
+
+      <div class="form-card form-card--full" id="batterySleepCard" style="display:none;">
+        <label class="checkbox-label">
+          <input type="checkbox" id="sleepScheduleEnabled" name="sleepScheduleEnabled" onchange="toggleSleepScheduleUi()"> Time-based shutdown (local time)
+        </label>
+        <div id="sleepScheduleInputs" style="display:none; flex-direction:column; gap:6px; margin-top:6px; margin-left:22px;">
+          <div>
+            <span class="info-label">Power off at</span>
+            <input type="time" id="sleepOffTime" name="sleepOffTime">
+          </div>
+          <div>
+            <span class="info-label">Power on at</span>
+            <input type="time" id="sleepOnTime" name="sleepOnTime">
+          </div>
+        </div>
       </div>
 
       <div class="form-card form-card--full">
@@ -262,6 +286,11 @@
       <div class="info-card">
         <span class="info-label">FANET Packets RX</span>
         <span class="info-value" id="fanet_rx">-</span>
+      </div>
+
+      <div class="info-card" id="batteryInfoCard" style="display:none;">
+        <span class="info-label">Battery</span>
+        <span class="info-value" id="batteryVoltage">-</span>
       </div>
 
     </div>

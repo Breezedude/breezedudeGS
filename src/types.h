@@ -8,6 +8,10 @@ struct Settings {
   char wifi_password[64];
   char ap_ssid[64];
   char ap_password[64];
+    bool batteryPowered;
+    bool sleepScheduleEnabled;
+    uint16_t sleepOffMinutes;
+    uint16_t sleepOnMinutes;
   bool sendAPRS;
   int aprsPort;
   char aprsServer[64];
@@ -25,6 +29,10 @@ struct Settings {
    strncpy(wifi_password, DEFAULT_STA_PASSWD, sizeof(wifi_password));
    strncpy(ap_ssid, "BD-Groundstation", sizeof(ap_ssid));
    strncpy(ap_password, "configureme", sizeof(ap_password));
+    batteryPowered = false;
+    sleepScheduleEnabled = false;
+    sleepOffMinutes = 22 * 60;
+    sleepOnMinutes = 6 * 60;
    aprsPort = 14580;
    strncpy(aprsServer, DEFAULT_APRS_SERVER, sizeof(aprsServer));
    elevation = 400;
@@ -332,7 +340,7 @@ extern hwInfoData hwInfoStore[HWINFO_MAX_STATIONS];
 extern hwInfoStationHistory hwInfoHistory[HWINFO_MAX_STATIONS];
 
 void pack_weatherdata(weatherData *wData, uint8_t * buffer);
-bool unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rssi);
+bool unpack_weatherdata(const uint8_t *buffer, size_t len, weatherData *wData, float snr, float rssi);
 bool unpack_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr);
 bool unpack_ground_trackingdata(uint8_t *buffer, trackingData *data, int rssi, int snr);
 bool unpack_hwinfo_t0a(const uint8_t *buffer, size_t len, hwInfoData *data, int rssi, int snr);

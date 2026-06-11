@@ -397,6 +397,48 @@ function saveSettings() {
   setTimeout(loadFields, 150);
 }
 
+function checkBatteryApWarning() {
+  const batteryEnabled = !!getVal('batteryPowered');
+  const keepAP = !!getVal('keepAP');
+  const visible = batteryEnabled && keepAP;
+  const warnings = [getEl('batteryApWarning'), getEl('batteryApWarningSettings')];
+  warnings.forEach((warning) => {
+    if (warning) {
+      warning.style.display = visible ? 'block' : 'none';
+    }
+  });
+}
+
+function toggleBatteryModeUi() {
+  const batteryEnabled = !!getVal('batteryPowered');
+  const batterySleepCard = getEl('batterySleepCard');
+  const batteryInfoCard = getEl('batteryInfoCard');
+  const batteryVoltage = getEl('batteryVoltage');
+
+  if (batterySleepCard) {
+    batterySleepCard.style.display = batteryEnabled ? '' : 'none';
+  }
+  if (batteryInfoCard) {
+    batteryInfoCard.style.display = batteryEnabled ? '' : 'none';
+  }
+  if (!batteryEnabled) {
+    const sleepEnabled = getEl('sleepScheduleEnabled');
+    if (sleepEnabled) sleepEnabled.checked = false;
+    if (batteryVoltage) batteryVoltage.innerText = '-';
+  }
+  toggleSleepScheduleUi();
+  checkBatteryApWarning();
+}
+
+function toggleSleepScheduleUi() {
+  const batteryEnabled = !!getVal('batteryPowered');
+  const sleepEnabled = !!getVal('sleepScheduleEnabled');
+  const sleepInputs = getEl('sleepScheduleInputs');
+  if (sleepInputs) {
+    sleepInputs.style.display = batteryEnabled && sleepEnabled ? 'flex' : 'none';
+  }
+}
+
 function sendReboot() {
     wsSend({ cmd: "reboot"});
 }
@@ -601,6 +643,15 @@ function updateFieldsFromData(data) {
           const warning = getEl('betaWarning');
           if (warning) warning.style.display = data[key] === 'beta' ? '' : 'none';
         }
+        if(key === "batteryPowered") {
+          toggleBatteryModeUi();
+        }
+        if(key === "sleepScheduleEnabled") {
+          toggleSleepScheduleUi();
+        }
+        if(key === "keepAP") {
+          checkBatteryApWarning();
+        }
         if(key === "deviceName"){
           updateFieldsFromData({'deviceNamedisplay': data[key]});
           got_settings =true;
@@ -631,6 +682,9 @@ window.addEventListener('load', () => {
     });
     document.getElementById('lat').addEventListener('input', () => updateAprsGuardUi(false));
     document.getElementById('lon').addEventListener('input', () => updateAprsGuardUi(false));
+    document.getElementById('batteryPowered').addEventListener('change', toggleBatteryModeUi);
+    document.getElementById('sleepScheduleEnabled').addEventListener('change', toggleSleepScheduleUi);
+    document.getElementById('keepAP').addEventListener('change', checkBatteryApWarning);
     const clearGeneralConsole = document.getElementById('clearGeneralConsole');
     if (clearGeneralConsole) {
       clearGeneralConsole.addEventListener('click', () => {

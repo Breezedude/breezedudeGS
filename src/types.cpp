@@ -178,66 +178,105 @@ void pack_weatherdata(weatherData *wData, uint8_t * buffer){
   pkt->charge = constrain(roundf(float(wData->Charge) / 100.0 * 15.0),0,15); //State of Charge  (+1byte lower 4 bits: 0x00 = 0%, 0x01 = 6.666%, .. 0x0F = 100%)
 }
 
-bool unpack_weatherdata(uint8_t *buffer, weatherData *wData, float snr, float rssi){
-    fanet_packet_t4 *pkt = (fanet_packet_t4 *)buffer;
+bool unpack_weatherdata(const uint8_t *buffer, size_t len, weatherData *wData, float snr, float rssi){
+    if (buffer == nullptr || wData == nullptr) {
+        return false;
+    }
+    if (len < (sizeof(fanet_header) + 1u + 3u + 3u)) {
+        return false;
+    }
+
+    const fanet_header *header = (const fanet_header *)buffer;
+    size_t idx = sizeof(fanet_header);
+    const uint8_t flags = buffer[idx++];
+
     wData->snr = snr;
     wData->rssi = rssi;
-    // Basic header
-    wData->vid = pkt->header.vendor;
-    wData->fanet_id = pkt->header.address;
-    wData->bStateOfCharge = pkt->bStateOfCharge;
-    wData->bBaro = pkt->bBaro;
-    wData->bHumidity = pkt->bHumidity;
-    wData->bWind = pkt->bWind;
-    wData->bTemp = pkt->bTemp;
+    wData->vid = header->vendor;
+    wData->fanet_id = header->address;
+    wData->bStateOfCharge = (flags & (1u << 1)) != 0;
+    wData->bBaro = (flags & (1u << 3)) != 0;
+    wData->bHumidity = (flags & (1u << 4)) != 0;
+    wData->bWind = (flags & (1u << 5)) != 0;
+    wData->bTemp = (flags & (1u << 6)) != 0;
     wData->devId = FANET2String(wData->vid, wData->fanet_id);
     wData->timestamp = time(nullptr);
-    // Latitude
-    int32_t lat_raw = pkt->latitude & 0xFFFFFF;  // keep only 24 bits
-    if (lat_raw & 0x800000)                            // if sign bit (bit 23) is set
-        lat_raw |= 0xFF000000;                         // sign extend to 32 bits
+
+    int32_t lat_raw =
+        ((int32_t)buffer[idx]) |
+        ((int32_t)buffer[idx + 1] << 8) |
+        ((int32_t)buffer[idx + 2] << 16);
+    idx += 3;
+    if (lat_raw & 0x800000) {
+        lat_raw |= 0xFF000000;
+    }
     wData->lat = (float)lat_raw / 93206.0f;
-    // Longitude
-    int32_t lon_raw = pkt->longitude & 0xFFFFFF; // keep only 24 bits
-    if (lon_raw & 0x800000)
+
+    int32_t lon_raw =
+        ((int32_t)buffer[idx]) |
+        ((int32_t)buffer[idx + 1] << 8) |
+        ((int32_t)buffer[idx + 2] << 16);
+    idx += 3;
+    if (lon_raw & 0x800000) {
         lon_raw |= 0xFF000000;
+    }
     wData->lon = (float)lon_raw / 46603.0f;
-    // Temperature
-    if(wData->bTemp){
-        int8_t iTemp = pkt->temp; // signed, as it uses 2's complement
-        wData->temp = iTemp / 2.0f; // recover 0.5 deg resolution
-    }
-    // Wind
-    if(wData->bWind){
-        wData->wHeading = (pkt->heading * 360.0f) / 256.0f; // recover heading
-        int speed;
-        if(pkt->speed_scale){
-            speed = pkt->speed * 5; // scale 5x
-        } else {
-            speed = pkt->speed;
-        }
-        wData->wSpeed = speed / 5.0f; // recover to km/h
 
-        if(pkt->gust_scale){
-            speed = pkt->gust * 5;
-        } else {
-            speed = pkt->gust;
+    if (wData->bTemp) {
+        if ((idx + 1u) > len) {
+            return false;
         }
-        wData->wGust = speed / 5.0f;
+        int8_t iTemp = (int8_t)buffer[idx++];
+        wData->temp = iTemp / 2.0f;
     }
 
-    // Humidity
-    if(wData->bHumidity){
-        wData->Humidity = pkt->humidity * 4.0f / 10.0f; // recover to %rh
+    if (wData->bWind) {
+        if ((idx + 3u) > len) {
+            return false;
+        }
+        const uint8_t heading = buffer[idx++];
+        const uint8_t speedByte = buffer[idx++];
+        const uint8_t gustByte = buffer[idx++];
+
+        wData->wHeading = (heading * 360.0f) / 256.0f;
+
+        int speed = (speedByte & 0x7Fu);
+        if (speedByte & 0x80u) {
+            speed *= 5;
+        }
+        wData->wSpeed = speed / 5.0f;
+
+        int gust = (gustByte & 0x7Fu);
+        if (gustByte & 0x80u) {
+            gust *= 5;
+        }
+        wData->wGust = gust / 5.0f;
     }
-    // Baro
-    if(wData->bBaro){
-        wData->Baro = (pkt->baro / 10.0f) + 430.0f; // recover to hPa
+
+    if (wData->bHumidity) {
+        if ((idx + 1u) > len) {
+            return false;
+        }
+        wData->Humidity = buffer[idx++] * 4.0f / 10.0f;
     }
-    // State of charge
-    if(wData->bStateOfCharge){
-        wData->Charge = (pkt->charge & 0x0F) * 100.0f / 15.0f; // recover 0-100%
+
+    if (wData->bBaro) {
+        if ((idx + 2u) > len) {
+            return false;
+        }
+        uint16_t baroRaw = (uint16_t)buffer[idx] | ((uint16_t)buffer[idx + 1] << 8);
+        idx += 2;
+        wData->Baro = (baroRaw / 10.0f) + 430.0f;
     }
+
+    if (wData->bStateOfCharge) {
+        if ((idx + 1u) > len) {
+            return false;
+        }
+        const uint8_t chargeRaw = buffer[idx++] & 0x0Fu;
+        wData->Charge = chargeRaw * 100.0f / 15.0f;
+    }
+
     return true;
 }
 
