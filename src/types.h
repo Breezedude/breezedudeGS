@@ -8,10 +8,6 @@ struct Settings {
   char wifi_password[64];
   char ap_ssid[64];
   char ap_password[64];
-    bool batteryPowered;
-    bool sleepScheduleEnabled;
-    uint16_t sleepOffMinutes;
-    uint16_t sleepOnMinutes;
   bool sendAPRS;
   int aprsPort;
   char aprsServer[64];
@@ -23,16 +19,16 @@ struct Settings {
   bool sendBreezedude;
   bool autoUpdate;
   char updateBranch[8];
+  bool batteryPowered;
+  bool sleepScheduleEnabled;
+  uint16_t sleepOffMinutes;
+  uint16_t sleepOnMinutes;
 
   Settings() {
    strncpy(wifi_ssid, DEFAULT_STA_SSID, sizeof(wifi_ssid));
    strncpy(wifi_password, DEFAULT_STA_PASSWD, sizeof(wifi_password));
    strncpy(ap_ssid, "BD-Groundstation", sizeof(ap_ssid));
    strncpy(ap_password, "configureme", sizeof(ap_password));
-    batteryPowered = false;
-    sleepScheduleEnabled = false;
-    sleepOffMinutes = 22 * 60;
-    sleepOnMinutes = 6 * 60;
    aprsPort = 14580;
    strncpy(aprsServer, DEFAULT_APRS_SERVER, sizeof(aprsServer));
    elevation = 400;
@@ -42,7 +38,11 @@ struct Settings {
    keepAP = true;
    sendBreezedude = true;
    autoUpdate = true;
-     strncpy(updateBranch, "stable", sizeof(updateBranch));
+   strncpy(updateBranch, "stable", sizeof(updateBranch));
+   batteryPowered = false;
+   sleepScheduleEnabled = false;
+   sleepOffMinutes = 22 * 60;
+   sleepOnMinutes = 6 * 60;
  }
 };
 

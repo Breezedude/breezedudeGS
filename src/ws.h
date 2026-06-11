@@ -7,6 +7,7 @@
 #include <HTTPClient.h>
 #include <esp_wifi.h>
 #include <math.h>
+#include "power_management.h"
 #include "aprs.h"
 
 #define HTTPTIMEOUT 1500
@@ -507,7 +508,6 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         resp["update_version"] = update_available_version;
         resp["fanet_rx"] = fanet_rx_count;
         if (settings.batteryPowered) {
-            extern float getBatteryVoltage();
             float batteryVoltage = getBatteryVoltage();
             if (!isnan(batteryVoltage)) {
                 char batteryText[10];
