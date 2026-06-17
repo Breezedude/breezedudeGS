@@ -1,10 +1,6 @@
 # 📡 breezedudeGS  
 Basic FANET OGN Groundstation based on ESP32 + SX1262
 
-## 🚧 BETA
-> [!IMPORTANT]
-> This project is currently in beta and may require further testing. If you encounter any issues or unexpected behavior, please open an issue or let me know.
-
 ## ⁉️ Why another groundstation software?
 
 Currently, the main groundstation options are [GxAirCom](https://github.com/gereic/GXAirCom) and [SDR-based OGN](https://github.com/glidernet/ogn-rf) receivers.  
@@ -52,30 +48,17 @@ using a stock Heltec Wireless Stick V3 Lite:
 
 
 ## Installing Using WebFlasher (recommended)
-Visit [Breezedude Web Installer](https://install.breezedude.de/) (requires Chrome or a [WebSerial compatible](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API#browser_compatibility) browser)
+Visit [Breezedude Web Installer](https://install.breezedude.de/tools/groundstation-install.html) (requires Chrome or a [WebSerial compatible](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API#browser_compatibility) browser on desktop)
 1. Connect the Heltec Wireless Stick to your computer using a USB C cable
-<img width="350" alt="image" src="https://github.com/user-attachments/assets/a6531162-342d-451e-a6b7-8a10b61af8cc" />
 
-2. Click Connect. A popup Window opens in yur browser. You should see a CP2102 device in the list.     
+2. Click Connect. A popup Window opens in yur browser. You should see a CP2102 device in the list. Seldt it an continue     
 <img width="350" alt="image" src="https://github.com/user-attachments/assets/3b85e4ce-6576-4db2-aef7-6748996edf04" />
      
-3. Select the device and click connect     
-<img width="350" alt="image" src="https://github.com/user-attachments/assets/f055c86a-501b-42d5-959b-f0bdbacbbb8c" />
+3. Wait for the installation to finish. During flashing you can enter the stations settings, it will be applied afterwards.
+<img width="350" src="https://github.com/user-attachments/assets/db24c6b9-1a39-4978-90d6-e772b184b3cb" />
 
-4. Select `erase device` and click next
-<img width="350" alt="image" src="https://github.com/user-attachments/assets/3efdccf4-d291-4d38-9372-790de954f70e" />
-
-5. Click `Install` to start the installation
-<img width="350" alt="image" src="https://github.com/user-attachments/assets/ddcac6d5-5fcd-426b-a253-3c1b15c84a0e" />
-
-6. Wait for the installation to finish
-<img width="350" alt="image" src="https://github.com/user-attachments/assets/7e489b64-44f0-4a5d-bf4d-22bda8a99556" />
-
-7. You should find a "BD-Groundstation" WiFi. Connect using the default password `configureme`. Continue with the Configuration
+5. If you did not setup the WiFi directly, you should find a "BD-Groundstation" WiFi. Connect using the default password `configureme`. Continue with the Configuration
 <img width="150" alt="image" src="https://github.com/user-attachments/assets/b4301a59-db89-4be0-bde2-599cbccdac62" />
-
-If its not working out of the box, check `Console/Log` for error messages
-
 
 ## 🎚️ Configuration
 - Flash device and connect to WiFi AP `BD-Groundstation` default password is `configureme`
@@ -107,12 +90,13 @@ The Ground Station automatically polls the Breezedude backend for pending config
 - Each device verifies the signature using its unique UUID suffix
 - Session IDs prevent API spoofing attacks
 
-
 **Monitoring:**
 - Config and firmware update activities are logged to serial output and web console.
 
 ## ↗ Updating
-### Using Web Update (recommended)
+### Using Auto-update (recommended)
+Select `stable` or `beta` channel in the stations webinterface. It will automatically check for updates and install them.
+### Manual Web Update
 Get the current version from [releases](https://github.com/thezenox/breezedudeGS/releases)
 Open configuration page of breezedude groundstation
 - (optional) Backup the settings by clicking `Export Config` in Tools
