@@ -31,6 +31,7 @@ extern hwInfoData hwInfoStore[HWINFO_MAX_STATIONS];
 extern void webconsole_sync_client(AsyncWebSocketClient *client);
 extern void webconsole_print(String in);
 extern void aprsconsole_print(String in);
+extern bool ota_verbose_ws;
 
 struct ForwardQueueItem {
     String url;
@@ -452,6 +453,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
   }
   else if (type == WS_EVT_DISCONNECT){
     Serial.printf("WS disconnected\r\n");
+    ota_verbose_ws = false;
   }
   else if (type == WS_EVT_PING){
     Serial.printf("WS ping\r\n");
@@ -707,6 +709,15 @@ else if (strcmp(cmd, "save_settings") == 0) {
         onUpdateBranchChanged();
     }
 }
+
+    else if (strcmp(cmd, "set_ota_verbose") == 0) {
+        ota_verbose_ws = doc["verbose"] | false;
+        JsonDocument resp;
+        resp["ota_verbose"] = ota_verbose_ws;
+        String output;
+        serializeJson(resp, output);
+        client->text(output);
+    }
 
     else if (strcmp(cmd, "reboot") == 0) {
         

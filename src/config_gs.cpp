@@ -175,7 +175,7 @@ static bool confirmConfigTransmission(const String& sessionId) {
 // OTA packet prefix for config update packets (must match device-side OTA_OP_CONFIG)
 static constexpr uint8_t CONFIG_OTA_MAGIC0  = 'O';
 static constexpr uint8_t CONFIG_OTA_MAGIC1  = 'T';
-static constexpr uint8_t CONFIG_OTA_PROTO   = 3u;
+static constexpr uint8_t CONFIG_OTA_PROTO   = 4u;
 static constexpr uint8_t CONFIG_OTA_OP      = 0x06u; // OTA_OP_CONFIG on device
 static constexpr uint8_t CONFIG_OTA_OP_ACK  = 0x04u; // OTA_OP_ACK
 static constexpr uint8_t CONFIG_OTA_IDLE    = 0x00u; // OTA_STATE_IDLE = success

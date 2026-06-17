@@ -13,12 +13,17 @@
 
   <!-- Theme Toggle Switch -->
   <div class="theme-toggle">
-    🌞
     <label class="switch">
       <input type="checkbox" id="themeSwitch">
-      <span class="slider"></span>
+      <span class="slider">
+        <svg class="theme-icon theme-icon--sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="8" cy="8" r="3.5"/><path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"/>
+        </svg>
+        <svg class="theme-icon theme-icon--moon" viewBox="0 0 16 18" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M13.5 10.5A7 7 0 0 1 5.5 2.5a7 7 0 1 0 8 8z"/>
+        </svg>
+      </span>
     </label>
-    🌙
   </div>
 
   <script>
@@ -76,7 +81,6 @@
     <div class="status-panel">
       <div id="wsStatus" style="font-size: 0.9em; color: green;">Connecting...</div>
       <div id="wsError" style="font-size: 0.8em; color: red;"></div>
-      <div id="msg" style="font-size: 0.8em;"></div>
     </div>
   </div>
 
@@ -352,11 +356,38 @@
     <hr>
     <h4>Console</h4>
 
+    <div id="otaLiveSection" class="ota-live" style="display:none;">
+      <div class="ota-live-head">
+        <span class="ota-live-title">🚀 OTA-Übertragung</span>
+        <span id="otaLiveProgress" class="ota-live-chip">0 / 0</span>
+        <span id="otaLiveSnr" class="ota-live-chip ota-live-chip--snr">SNR GS: – dB</span>
+        <span id="otaLiveDeviceSnr" class="ota-live-chip ota-live-chip--device-snr">SNR Device: – dB</span>
+        <span id="otaLiveDeviceRssi" class="ota-live-chip ota-live-chip--device-rssi">RSSI Device: – dBm</span>
+        <span id="otaLiveRetries" class="ota-live-chip ota-live-chip--retry">Retries: –</span>
+        <span id="otaLiveAckResends" class="ota-live-chip ota-live-chip--ackresend">ACK-Resends: –</span>
+      </div>
+      <div class="ota-live-chart">
+        <canvas id="otaLiveCanvas"></canvas>
+        <div class="ota-live-axis-label ota-live-axis-label--top">SNR GS (dB)</div>
+        <div class="ota-live-axis-label ota-live-axis-label--zero">0</div>
+        <div class="ota-live-axis-label ota-live-axis-label--bottom">SNR Device (dB)</div>
+        <div class="ota-live-axis-label ota-live-axis-label--rssi">RSSI Device</div>
+      </div>
+      <div class="ota-live-chart ota-live-chart--retry">
+        <canvas id="otaLiveRetryCanvas"></canvas>
+        <div class="ota-live-axis-label ota-live-axis-label--bottom">Retries / ACK-Resends</div>
+      </div>
+      <div id="otaLiveStatus" class="ota-live-status"></div>
+    </div>
+
     <details open>
       <summary>System Console</summary>
       <div style="margin-top:8px;">
         <button id="clearGeneralConsole">🪠 Clear</button>
-        <textarea class="console" id="webconsole" rows="16" readonly></textarea>
+        <label class="ota-verbose-toggle" title="Zeigt alle einzelnen OTA-Paket-Status (nur für diese Sitzung, wird beim Trennen der Verbindung zurückgesetzt)">
+          <input type="checkbox" id="otaVerboseToggle"> OTA Verbose
+        </label>
+        <textarea class="console" id="webconsole" rows="16" readonly wrap="off"></textarea>
       </div>
     </details>
 
@@ -364,14 +395,16 @@
       <summary>APRS Console</summary>
       <div style="margin-top:8px;">
         <button id="clearAprsConsole">🪠 Clear</button>
-        <textarea class="console" id="aprsconsole" rows="12" readonly></textarea>
+        <textarea class="console" id="aprsconsole" rows="12" readonly wrap="off"></textarea>
       </div>
     </details>
-    
+
   </div>
 </div>
   <p id="status"></p>
   </div>
+
+  <div id="toastContainer" class="toast-container"></div>
 
 </body>
 </html>

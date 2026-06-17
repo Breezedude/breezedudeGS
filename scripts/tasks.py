@@ -1,7 +1,14 @@
 Import("env")
 
 import os
+import shutil
 from SCons.Script import DefaultEnvironment
+
+INSTALL_DIR = os.path.join(os.path.dirname(os.environ.get("PYTHONPATH", "").split(os.pathsep)[0]),
+                           "..", "..", "install.breezedude", "esp_flasher")
+
+def get_install_dir(project_dir):
+    return os.path.normpath(os.path.join(project_dir, "..", "install.breezedude", "esp_flasher"))
 
 def build_all_in_one(source, target, env):
     platform = env.PioPlatform()
@@ -18,9 +25,6 @@ def build_all_in_one(source, target, env):
 
     all_in_one = os.path.join(project_dir, "all-in-one.bin")
 
-    print("=== ACTIVE PARTITIONS ===")
-    print(env.PrintConfiguration())
-
     cmd = (
         f"python \"{esptool_path}\" --chip esp32s3 merge_bin -o \"{all_in_one}\" "
         f"--flash_mode dio --flash_freq 80m --flash_size 8MB "
@@ -31,14 +35,33 @@ def build_all_in_one(source, target, env):
         f"0x670000 \"{littlefs}\""
     )
 
-    print("Merging binaries into:", all_in_one, cmd)
+    print("Merging binaries into:", all_in_one)
     os.system(cmd)
+
+    # Copy individual parts to install directory for web flasher
+    install_dir = get_install_dir(project_dir)
+    os.makedirs(install_dir, exist_ok=True)
+
+    files = [
+        (bootloader, "bootloader.bin"),
+        (partitions, "partitions.bin"),
+        (boot_app0,  "boot_app0.bin"),
+        (firmware,   "firmware.bin"),
+        (littlefs,   "littlefs.bin"),
+    ]
+    for src, name in files:
+        dst = os.path.join(install_dir, name)
+        if os.path.exists(src):
+            shutil.copyfile(src, dst)
+            print(f"Copied {name} → {dst}")
+        else:
+            print(f"Warning: {src} not found, skipping")
 
 
 env.AddCustomTarget(
     name="build_allinone",
-    dependencies=["buildfs","buildprog"],   # build firmware + FS image
-    actions=[build_all_in_one],    # then merge bins
+    dependencies=["buildfs","buildprog"],
+    actions=[build_all_in_one],
     title="Build & Bundle All",
-    description="Compiles and bundles into one binary"
+    description="Compiles firmware + FS, merges all-in-one.bin, copies parts to install dir"
 )

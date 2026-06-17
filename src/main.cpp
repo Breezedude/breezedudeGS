@@ -20,7 +20,6 @@
 #include "config_gs.h"
 #include "recovery.h"
 #include "power_management.h"
-//#include "improv_serial.h"
 
 #define SPIFFS LittleFS
 
@@ -288,6 +287,32 @@ void webconsole_print(String in){
   }
 }
 
+// Verbose OTA logging: set by the web UI per-session via the "set_ota_verbose"
+// command and reset whenever the websocket connection drops (see onWsEvent in
+// ws.h), so it always has to be explicitly re-enabled. Verbose messages are
+// pushed live to connected clients only - they are NOT added to the
+// webconsole history buffer, to avoid filling it with per-packet noise.
+bool ota_verbose_ws = false;
+
+void ota_status_v(const String& msg){
+  if(!ota_verbose_ws) {
+    return;
+  }
+  String in = sanitizeLogLine(msg);
+  if (in.length() == 0) {
+    return;
+  }
+
+  if(ws.availableForWriteAll()){
+    JsonDocument doc;
+    doc["webconsole"] = in;
+    doc["ts"] = (uint32_t)time(nullptr);
+    String text;
+    serializeJson(doc, text);
+    ws.textAll(text);
+  }
+}
+
 void aprsconsole_print(String in){
   in = sanitizeLogLine(in);
   if (in.length() == 0) {
@@ -301,6 +326,57 @@ void aprsconsole_print(String in){
     serializeJson(doc, text);
     ws.textAll(text);
   }
+}
+
+// Live OTA chunk-transfer progress pushed to the web UI (see www/app.js,
+// section "Tools -> Console -> OTA"). Three phases:
+//  - "start": transfer begins, total chunk count is known
+//  - "chunk": one chunk has been acked (or permanently failed), with its
+//             retry count (15 = transfer-aborting chunk), the SNR seen by
+//             the GS for that chunk's ack, the device's ack_resend_count
+//             (how often the device resent its ack for this chunk before the
+//             GS received it, with proactiveAckResends as the subset of
+//             those resends that were sent proactively), and the SNR/RSSI
+//             the device measured for the chunk packet itself
+//  - "end":   transfer finished (success or failure)
+void ota_progress_start(uint32_t totalChunks){
+  if(!ws.availableForWriteAll()) return;
+  JsonDocument doc;
+  JsonObject p = doc["ota_progress"].to<JsonObject>();
+  p["phase"] = "start";
+  p["total"] = totalChunks;
+  String text;
+  serializeJson(doc, text);
+  ws.textAll(text);
+}
+
+void ota_progress_chunk(uint16_t seq, uint8_t retries, float snr, uint8_t ackResendCount,
+                         int8_t deviceSnr, int8_t deviceRssi, uint8_t proactiveAckResendCount){
+  if(!ws.availableForWriteAll()) return;
+  JsonDocument doc;
+  JsonObject p = doc["ota_progress"].to<JsonObject>();
+  p["phase"] = "chunk";
+  p["seq"] = seq;
+  p["retries"] = retries;
+  p["snr"] = snr;
+  p["ackResends"] = ackResendCount;
+  p["deviceSnr"] = deviceSnr;
+  p["deviceRssi"] = deviceRssi;
+  p["proactiveAckResends"] = proactiveAckResendCount;
+  String text;
+  serializeJson(doc, text);
+  ws.textAll(text);
+}
+
+void ota_progress_end(bool success){
+  if(!ws.availableForWriteAll()) return;
+  JsonDocument doc;
+  JsonObject p = doc["ota_progress"].to<JsonObject>();
+  p["phase"] = "end";
+  p["success"] = success;
+  String text;
+  serializeJson(doc, text);
+  ws.textAll(text);
 }
 
 void webconsole_sync_client(AsyncWebSocketClient *client) {
@@ -653,6 +729,7 @@ void run_wifi() {
             connect_error_count = 0;
         String connectedMsg = "Connected to WiFi, IP: " + WiFi.localIP().toString();
         Serial.println(connectedMsg);
+        Serial.println("GS_IP:" + WiFi.localIP().toString());
         webconsole_print(connectedMsg);
 
         JsonDocument doc;
@@ -711,6 +788,125 @@ void save_preferences(){
   preferences.end();
 }
 
+// ── Serial command handler ────────────────────────────────────────────────────
+// Accepts: GS_CONFIG:{"ssid":"...","pass":"...","name":"...","lat":47.0,"lon":11.0,"alt":800}\r\n
+// Replies: GS_CONFIG:OK, then GS_IP:<ip>  on success
+//          GS_CONFIG:OK, then GS_WIFI:FAIL:<reason>  on failure
+//          GS_CONFIG:ERROR:<reason>  on parse error
+static String _serialBuf;
+
+// Try to connect to WiFi synchronously (up to 3 attempts, 10 s each).
+// Returns empty string on success, or a failure reason token.
+static String connectWiFiBlocking(const char* ssid, const char* pass) {
+  WiFi.disconnect(true);
+  delay(300);
+
+  const int    MAX_ATTEMPTS    = 3;
+  const unsigned long TIMEOUT_MS = 10000;
+
+  for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    Serial.printf("WiFi connect attempt %d/%d to SSID: %s\n", attempt, MAX_ATTEMPTS, ssid);
+    WiFi.begin(ssid, pass);
+
+    unsigned long t0 = millis();
+    wl_status_t st = WL_IDLE_STATUS;
+    bool authFailed = false;
+    while (millis() - t0 < TIMEOUT_MS) {
+      st = WiFi.status();
+      if (st == WL_CONNECTED)     return "";                // success
+      if (st == WL_NO_SSID_AVAIL) return "ssid_not_found"; // no point retrying
+      if (st == WL_CONNECT_FAILED) { authFailed = true; break; } // try again before reporting
+      delay(200);
+      yield();
+    }
+
+    Serial.printf("WiFi attempt %d failed: status=%d authFail=%d\n", attempt, (int)st, (int)authFailed);
+    WiFi.disconnect(true);
+    delay(300);
+
+    // Only report auth failure after all attempts to avoid false positives on transient errors
+    if (authFailed && attempt == MAX_ATTEMPTS) return "auth_failed";
+  }
+
+  return "timeout";
+}
+
+static void handleSerialCommands() {
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n') {
+      String line = _serialBuf;
+      _serialBuf = "";
+      line.trim();
+      if (!line.startsWith("GS_CONFIG:")) continue;
+
+      String json = line.substring(10);
+      JsonDocument doc;
+      if (deserializeJson(doc, json)) {
+        Serial.println("GS_CONFIG:ERROR:json_parse_failed");
+        continue;
+      }
+
+      bool changed    = false;
+      bool hasNewSsid = doc["ssid"].is<const char*>();
+
+      if (hasNewSsid) {
+        strncpy(settings.wifi_ssid,     doc["ssid"] | "", sizeof(settings.wifi_ssid) - 1);
+        strncpy(settings.wifi_password, doc["pass"] | "", sizeof(settings.wifi_password) - 1);
+        changed = true;
+      }
+      if (doc["name"].is<const char*>()) {
+        strncpy(settings.deviceName, doc["name"] | "", sizeof(settings.deviceName) - 1);
+        changed = true;
+      }
+      if (doc["lat"].is<float>()) { settings.latitude  = doc["lat"].as<float>(); changed = true; }
+      if (doc["lon"].is<float>()) { settings.longitude = doc["lon"].as<float>(); changed = true; }
+      if (doc["alt"].is<int>())   { settings.elevation = doc["alt"].as<int>();   changed = true; }
+
+      // After applying all fields, check if the station is now fully configured
+      // (has WiFi, a non-default name, and a non-default position). If so, enable
+      // data forwarding automatically so no manual web-UI step is needed.
+      bool hasWifi = strlen(settings.wifi_ssid) > 0;
+      bool hasName = strlen(settings.deviceName) > 0 && strcmp(settings.deviceName, "MyGS") != 0;
+      bool hasPos  = !(fabsf(settings.latitude  - 47.0f) < 0.001f &&
+                       fabsf(settings.longitude - 12.0f) < 0.001f);
+      if (hasWifi && hasName && hasPos) {
+        settings.sendBreezedude = true;
+        settings.sendAPRS       = true;
+        changed = true;
+      }
+
+      if (changed) save_preferences();
+      Serial.setDebugOutput(false);
+      Serial.println("GS_CONFIG:OK");
+      Serial.flush();
+      Serial.setDebugOutput(true);
+
+      if (hasNewSsid) {
+        String err = connectWiFiBlocking(settings.wifi_ssid, settings.wifi_password);
+        if (err.isEmpty()) {
+          wifiConnected     = true;
+          forceReconnectSTA = false;
+          String ip = WiFi.localIP().toString();
+          Serial.println("Connected to WiFi, IP: " + ip);
+          Serial.setDebugOutput(false);
+          Serial.println("GS_IP:" + ip);
+          Serial.flush();
+          Serial.setDebugOutput(true);
+        } else {
+          Serial.setDebugOutput(false);
+          Serial.println("GS_WIFI:FAIL:" + err);
+          Serial.flush();
+          Serial.setDebugOutput(true);
+          forceReconnectSTA = true; // keep retrying in background
+        }
+      }
+    } else if (c != '\r') {
+      if (_serialBuf.length() < 512) _serialBuf += c;
+    }
+  }
+}
+
 static void initSerialOutputs() {
   Serial.begin(115200);
   Serial.setDebugOutput(true);
@@ -756,9 +952,6 @@ void setup() {
     applyFotaBranch();
     activeFota->printConfig();
 
-    // Initialize Improv Serial for WiFi provisioning
-    //improv_begin(fw_version, "BreezedudeGS");
-
     // init buffers
     for (int i = 0; i < MAX_DEVICES; i++) {
       weatherStore[i].timestamp = 0;
@@ -786,6 +979,9 @@ void setup() {
   config_gs_begin();
   ota_gs_begin();
   update_aprs_settings();
+
+  // Signal to the web installer that serial is ready and config can be sent
+  Serial.println("GS_READY");
 }
 
 void handle_dummy(){
@@ -808,7 +1004,7 @@ uint32_t lastCall = 0;
 
 void loop() {
   dnsServer.processNextRequest();
-  //improv_handle();
+  handleSerialCommands();
 
   handleBatteryAndSleep();
   wifi_scan_tick();

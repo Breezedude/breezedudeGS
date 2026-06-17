@@ -224,6 +224,32 @@ function getEl(id) {
   return el;
 }
 
+function classifyToastMessage(text) {
+  const msg = String(text || '').toLowerCase();
+  if (msg.includes('not connected') || msg.includes('nicht verbunden')) return 'info';
+  if (msg.includes('error') || msg.includes('fehler') || msg.includes('failed') || msg.includes('deaktiviert')) return 'error';
+  if (msg.includes('saved') || msg.includes('gespeichert') || msg.includes('connected') || msg.includes('verbunden') || msg.includes('success') || msg.includes('erfolgreich')) return 'success';
+  return 'info';
+}
+
+function showToast(text, type) {
+  const container = getEl('toastContainer');
+  if (!container || !text) return;
+
+  const toastType = type || classifyToastMessage(text);
+  const toast = document.createElement('div');
+  toast.className = `toast toast--${toastType}`;
+  toast.innerText = text;
+  container.appendChild(toast);
+
+  requestAnimationFrame(() => toast.classList.add('toast--visible'));
+
+  setTimeout(() => {
+    toast.classList.remove('toast--visible');
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
 function setConsoleLines(textarea, lines) {
   if (!textarea) return;
   const limitedLines = lines.slice(-MAX_CONSOLE_LINES);
@@ -267,6 +293,325 @@ function hide(id){
     el.style.display = 'none'
   }
 }
+
+// --- OTA live monitor (Tools -> Console -> OTA) -------------------------
+// Visualizes streamFirmware()'s per-chunk transfer stats live, as they arrive
+// over the websocket ({"ota_progress": {...}}, see main.cpp / ota_gs.cpp).
+// Main chart: each chunk draws a bar above the zero-line for the SNR the GS
+// measured on the device's ack, and a mirrored bar below the zero-line for
+// the SNR the device measured on the chunk packet. The RSSI the device
+// measured for the chunk packet is overlaid as a single line spanning the
+// full chart height. A second, shorter chart below shows retries (with a
+// full-height red bar marking the chunk that aborted the transfer, if any)
+// and ack-resends (with a lighter stripe marking the proactive subset).
+const OTA_LIVE_SNR_MIN = -20;     // fallback range until real values arrive
+const OTA_LIVE_SNR_MAX = 11;
+const OTA_LIVE_RETRY_ABORT = 15;  // sentinel: this chunk aborted the transfer
+const OTA_LIVE_HIDE_DELAY_MS = 12000;
+
+const otaLive = {
+  total: 0,
+  chunks: [],
+  hideTimer: null,
+  // Dynamic axis ranges, derived from the values seen so far this transfer
+  snrMin: null,
+  snrMax: null,
+  deviceSnrMin: null,
+  deviceSnrMax: null,
+  rssiMin: null,
+  rssiMax: null,
+  retryMax: 1,
+  ackResendMax: 1,
+};
+
+function otaLiveClamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+
+function otaLiveHexToRgba(color, alpha) {
+  const hex = color.trim().replace('#', '');
+  if (hex.length === 3 || hex.length === 6) {
+    const full = hex.length === 3 ? hex.split('').map(c => c + c).join('') : hex;
+    const r = parseInt(full.substring(0, 2), 16);
+    const g = parseInt(full.substring(2, 4), 16);
+    const b = parseInt(full.substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return color;
+}
+
+function otaLiveResizeCanvas(id) {
+  const canvas = getEl(id);
+  if (!canvas) return null;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.round(rect.width * dpr));
+  const h = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  return canvas;
+}
+
+function otaLiveDrawMain() {
+  const canvas = otaLiveResizeCanvas('otaLiveCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  const mid = h / 2;
+
+  ctx.clearRect(0, 0, w, h);
+
+  const total = Math.max(otaLive.total, otaLive.chunks.length, 1);
+  const barW = Math.max(w / total, 1);
+
+  // Resolve theme-aware colors (data-theme lives on <body>)
+  const themeStyle = getComputedStyle(document.body);
+  const snrColor = themeStyle.getPropertyValue('--ota-snr-color').trim() || '#6f98d6';
+  const deviceSnrColor = themeStyle.getPropertyValue('--ota-device-snr-color').trim() || '#2faa75';
+  const deviceRssiColor = themeStyle.getPropertyValue('--ota-device-rssi-color').trim() || '#d6a900';
+  const zeroColor = themeStyle.getPropertyValue('--ota-zero-line').trim() || 'rgba(0,0,0,0.3)';
+
+  const snrGrad = ctx.createLinearGradient(0, 0, 0, mid);
+  snrGrad.addColorStop(0, snrColor);
+  snrGrad.addColorStop(1, otaLiveHexToRgba(snrColor, 0.25));
+
+  const deviceSnrGrad = ctx.createLinearGradient(0, mid, 0, h);
+  deviceSnrGrad.addColorStop(0, otaLiveHexToRgba(deviceSnrColor, 0.25));
+  deviceSnrGrad.addColorStop(1, deviceSnrColor);
+
+  // Dynamic axis ranges: scale to the values actually seen so far, so the
+  // chart uses the full height instead of mostly-empty/mostly-full bars.
+  const snrMin = otaLive.snrMin !== null ? otaLive.snrMin : OTA_LIVE_SNR_MIN;
+  const snrMax = otaLive.snrMax !== null ? otaLive.snrMax : OTA_LIVE_SNR_MAX;
+  const snrSpan = snrMax - snrMin;
+  const deviceSnrMin = otaLive.deviceSnrMin !== null ? otaLive.deviceSnrMin : OTA_LIVE_SNR_MIN;
+  const deviceSnrMax = otaLive.deviceSnrMax !== null ? otaLive.deviceSnrMax : OTA_LIVE_SNR_MAX;
+  const deviceSnrSpan = deviceSnrMax - deviceSnrMin;
+  const rssiMin = otaLive.rssiMin;
+  const rssiMax = otaLive.rssiMax;
+  const rssiSpan = (rssiMin !== null && rssiMax !== null) ? rssiMax - rssiMin : 0;
+
+  for (let i = 0; i < otaLive.chunks.length; i++) {
+    const c = otaLive.chunks[i];
+    if (!c) continue;
+    const x = i * (w / total);
+
+    if (Number.isFinite(c.snr)) {
+      const frac = snrSpan > 0 ? otaLiveClamp01((c.snr - snrMin) / snrSpan) : 1;
+      const barH = frac * mid;
+      ctx.fillStyle = snrGrad;
+      ctx.fillRect(x, mid - barH, barW, barH);
+    }
+
+    if (Number.isFinite(c.deviceSnr)) {
+      const frac = deviceSnrSpan > 0 ? otaLiveClamp01((c.deviceSnr - deviceSnrMin) / deviceSnrSpan) : 1;
+      const barH = frac * (h - mid);
+      ctx.fillStyle = deviceSnrGrad;
+      ctx.fillRect(x, mid, barW, barH);
+    }
+  }
+
+  // RSSI overlay: a single line spanning the full chart height, mapped from
+  // [rssiMin..rssiMax] onto [h..0].
+  if (rssiSpan > 0) {
+    ctx.strokeStyle = deviceRssiColor;
+    ctx.lineWidth = Math.max(1.5 * (window.devicePixelRatio || 1), 1.5);
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < otaLive.chunks.length; i++) {
+      const c = otaLive.chunks[i];
+      if (!c || !Number.isFinite(c.deviceRssi)) continue;
+      const x = (i + 0.5) * (w / total);
+      const frac = otaLiveClamp01((c.deviceRssi - rssiMin) / rssiSpan);
+      const y = h - frac * h;
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    if (started) ctx.stroke();
+  }
+
+  ctx.strokeStyle = zeroColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, mid + 0.5);
+  ctx.lineTo(w, mid + 0.5);
+  ctx.stroke();
+}
+
+function otaLiveDrawRetry() {
+  const canvas = otaLiveResizeCanvas('otaLiveRetryCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+
+  const total = Math.max(otaLive.total, otaLive.chunks.length, 1);
+  const barW = Math.max(w / total, 1);
+
+  const themeStyle = getComputedStyle(document.body);
+  const retryColor = themeStyle.getPropertyValue('--ota-retry-color').trim() || '#e8743b';
+  const ackResendColor = themeStyle.getPropertyValue('--ota-ackresend-color').trim() || '#9b59b6';
+  const abortColor = themeStyle.getPropertyValue('--ota-abort-color').trim() || '#dc2626';
+
+  const retryMax = Math.max(otaLive.retryMax, 1);
+  const ackResendMax = Math.max(otaLive.ackResendMax, 1);
+
+  for (let i = 0; i < otaLive.chunks.length; i++) {
+    const c = otaLive.chunks[i];
+    if (!c) continue;
+    const x = i * (w / total);
+
+    if (c.retries >= OTA_LIVE_RETRY_ABORT) {
+      ctx.fillStyle = abortColor;
+      ctx.fillRect(x, 0, barW, h);
+    } else if (c.retries > 0) {
+      const frac = otaLiveClamp01(c.retries / retryMax);
+      const barH = frac * h;
+      ctx.fillStyle = retryColor;
+      ctx.fillRect(x, h - barH, barW, barH);
+    }
+
+    if (c.ackResends > 0) {
+      const frac = otaLiveClamp01(c.ackResends / ackResendMax);
+      const barH = frac * h;
+      const stripeW = Math.max(barW * 0.4, 1);
+      ctx.fillStyle = ackResendColor;
+      ctx.fillRect(x + barW - stripeW, h - barH, stripeW, barH);
+
+      if (c.proactiveAckResends > 0) {
+        const pFrac = otaLiveClamp01(c.proactiveAckResends / ackResendMax);
+        const pBarH = pFrac * h;
+        ctx.fillStyle = otaLiveHexToRgba(ackResendColor, 0.45);
+        ctx.fillRect(x + barW - stripeW, h - pBarH, stripeW, pBarH);
+      }
+    }
+  }
+}
+
+function otaLiveDraw() {
+  otaLiveDrawMain();
+  otaLiveDrawRetry();
+}
+
+function handleOtaProgress(p) {
+  const section = getEl('otaLiveSection');
+  if (!section || !p || !p.phase) return;
+
+  if (p.phase === 'start') {
+    if (otaLive.hideTimer) {
+      clearTimeout(otaLive.hideTimer);
+      otaLive.hideTimer = null;
+    }
+    otaLive.total = Number(p.total) || 0;
+    otaLive.chunks = [];
+    otaLive.snrMin = null;
+    otaLive.snrMax = null;
+    otaLive.deviceSnrMin = null;
+    otaLive.deviceSnrMax = null;
+    otaLive.rssiMin = null;
+    otaLive.rssiMax = null;
+    otaLive.retryMax = 1;
+    otaLive.ackResendMax = 1;
+    section.classList.remove('ota-live-done', 'ota-live-failed');
+
+    const status = getEl('otaLiveStatus');
+    if (status) status.textContent = 'OTA in progress …';
+    const prog = getEl('otaLiveProgress');
+    if (prog) prog.textContent = `0 / ${otaLive.total}`;
+    const snrChip = getEl('otaLiveSnr');
+    if (snrChip) snrChip.textContent = 'SNR GS: – dB';
+    const deviceSnrChip = getEl('otaLiveDeviceSnr');
+    if (deviceSnrChip) deviceSnrChip.textContent = 'SNR Device: – dB';
+    const deviceRssiChip = getEl('otaLiveDeviceRssi');
+    if (deviceRssiChip) deviceRssiChip.textContent = 'RSSI Device: – dBm';
+    const retryChip = getEl('otaLiveRetries');
+    if (retryChip) retryChip.textContent = 'Retries: –';
+    const ackResendChip = getEl('otaLiveAckResends');
+    if (ackResendChip) ackResendChip.textContent = 'ACK-Resends: –';
+
+    show('otaLiveSection');
+    requestAnimationFrame(otaLiveDraw);
+  } else if (p.phase === 'chunk') {
+    if (section.style.display === 'none') {
+      show('otaLiveSection');
+    }
+    const seq = Number(p.seq) || 0;
+    const retries = Number(p.retries) || 0;
+    const snr = Number(p.snr);
+    const ackResends = Number(p.ackResends) || 0;
+    const deviceSnr = Number(p.deviceSnr);
+    const deviceRssi = Number(p.deviceRssi);
+    const proactiveAckResends = Number(p.proactiveAckResends) || 0;
+    otaLive.chunks[seq] = { retries, snr, ackResends, deviceSnr, deviceRssi, proactiveAckResends };
+
+    // Track dynamic axis ranges from the values seen so far
+    if (Number.isFinite(snr)) {
+      otaLive.snrMin = otaLive.snrMin === null ? snr : Math.min(otaLive.snrMin, snr);
+      otaLive.snrMax = otaLive.snrMax === null ? snr : Math.max(otaLive.snrMax, snr);
+    }
+    if (Number.isFinite(deviceSnr)) {
+      otaLive.deviceSnrMin = otaLive.deviceSnrMin === null ? deviceSnr : Math.min(otaLive.deviceSnrMin, deviceSnr);
+      otaLive.deviceSnrMax = otaLive.deviceSnrMax === null ? deviceSnr : Math.max(otaLive.deviceSnrMax, deviceSnr);
+    }
+    if (Number.isFinite(deviceRssi)) {
+      otaLive.rssiMin = otaLive.rssiMin === null ? deviceRssi : Math.min(otaLive.rssiMin, deviceRssi);
+      otaLive.rssiMax = otaLive.rssiMax === null ? deviceRssi : Math.max(otaLive.rssiMax, deviceRssi);
+    }
+    if (retries < OTA_LIVE_RETRY_ABORT) {
+      otaLive.retryMax = Math.max(otaLive.retryMax, retries);
+    }
+    otaLive.ackResendMax = Math.max(otaLive.ackResendMax, ackResends);
+
+    const prog = getEl('otaLiveProgress');
+    if (prog) prog.textContent = `${seq + 1} / ${otaLive.total || (seq + 1)}`;
+    const snrChip = getEl('otaLiveSnr');
+    if (snrChip && Number.isFinite(snr)) snrChip.textContent = `SNR GS: ${snr.toFixed(1)} dB`;
+    const deviceSnrChip = getEl('otaLiveDeviceSnr');
+    if (deviceSnrChip && Number.isFinite(deviceSnr)) deviceSnrChip.textContent = `SNR Device: ${deviceSnr.toFixed(1)} dB`;
+    const deviceRssiChip = getEl('otaLiveDeviceRssi');
+    if (deviceRssiChip && Number.isFinite(deviceRssi)) deviceRssiChip.textContent = `RSSI Device: ${deviceRssi.toFixed(0)} dBm`;
+    const retryChip = getEl('otaLiveRetries');
+    if (retryChip) retryChip.textContent = retries >= OTA_LIVE_RETRY_ABORT ? 'Retries: Abort' : `Retries: ${retries}`;
+    const ackResendChip = getEl('otaLiveAckResends');
+    if (ackResendChip) ackResendChip.textContent = proactiveAckResends > 0 ? `ACK-Resends: ${ackResends} (proaktiv: ${proactiveAckResends})` : `ACK-Resends: ${ackResends}`;
+
+    const otaVerboseToggle = getEl('otaVerboseToggle');
+    const webCon = getEl('webconsole');
+    if (webCon && otaVerboseToggle && otaVerboseToggle.checked) {
+      const ts = new Date().toLocaleTimeString();
+      const retriesText = retries >= OTA_LIVE_RETRY_ABORT ? 'Abort' : String(retries);
+      const snrText = Number.isFinite(snr) ? `${snr.toFixed(1)} dB` : '–';
+      appendConsoleText(webCon, `[${ts}] OTA chunk ${seq}: retries=${retriesText}, snr=${snrText}, ackResends=${ackResends}`);
+    }
+
+    otaLiveDraw();
+  } else if (p.phase === 'end') {
+    const success = !!p.success;
+    section.classList.add(success ? 'ota-live-done' : 'ota-live-failed');
+    const status = getEl('otaLiveStatus');
+    if (status) status.textContent = success ? '✅ Update successful' : '❌ Update failed';
+
+    otaLive.hideTimer = setTimeout(() => {
+      hide('otaLiveSection');
+    }, OTA_LIVE_HIDE_DELAY_MS);
+  }
+}
+
+window.addEventListener('resize', () => {
+  const section = getEl('otaLiveSection');
+  if (section && section.style.display !== 'none') {
+    otaLiveDraw();
+  }
+});
 
 function getVal(id) {
     const el = document.getElementById(id);
@@ -583,6 +928,10 @@ function updateFieldsFromData(data) {
     }
 
     Object.keys(data).forEach(key => {
+      if (key === 'msg') {
+        showToast(data[key]);
+        return;
+      }
       const el = getEl(key);
         const skipGenericUpdate = key === 'aprsconsole' || key === 'webconsole' || key === 'webconsole_history';
         if (el && !skipGenericUpdate) {
@@ -601,9 +950,6 @@ function updateFieldsFromData(data) {
             //console.warn(`Element with id '${key}' not found.`);
         }
 
-        if(key === "msg"){
-          setTimeout(() => { if (el) el.innerText = ""; }, 3000);
-        }
         if(key === "webconsole_history"){
           const con = getEl('webconsole');
           if (con && Array.isArray(data[key])) {
@@ -701,6 +1047,15 @@ window.addEventListener('load', () => {
       });
     }
 
+    const otaVerboseToggle = document.getElementById('otaVerboseToggle');
+    if (otaVerboseToggle) {
+      otaVerboseToggle.addEventListener('change', () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({cmd: "set_ota_verbose", verbose: otaVerboseToggle.checked}));
+        }
+      });
+    }
+
 });
 
 function loadFields(){
@@ -780,6 +1135,13 @@ function initWebSocket() {
     updateFieldsFromData({"otaStatus": ""});
     lastWsMessageTime = Date.now();
     if (wsHeartbeatInterval) clearInterval(wsHeartbeatInterval);
+
+    // OTA verbose mode is per-websocket-session on the device, so re-send the
+    // current checkbox state whenever a (re)connection is established.
+    const otaVerboseToggle = document.getElementById('otaVerboseToggle');
+    if (otaVerboseToggle && otaVerboseToggle.checked) {
+      ws.send(JSON.stringify({cmd: "set_ota_verbose", verbose: true}));
+    }
 
     wsHeartbeatInterval = setInterval(() => {
         if (Date.now() - lastWsMessageTime > WS_TIMEOUT_MS) {
@@ -957,6 +1319,9 @@ function initWebSocket() {
           }
         }
       });
+    }
+    else if (data.ota_progress) {
+      handleOtaProgress(data.ota_progress);
     }
     // update static info
     else {

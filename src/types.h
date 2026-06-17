@@ -3,6 +3,9 @@
  #include "config_template.h"
  //#include "config.h"
 
+
+// Important !!!: Do only add new values at the end of this enum, otherwise you will loose compatibility with existing stored settings and may brick devices that update to a new firmware version with changed enum order. 
+// If you need to remove an old value, just mark it as deprecated and ignore it in the code, but do not delete it from the enum.
 struct Settings {
   char wifi_ssid[64];
   char wifi_password[64];

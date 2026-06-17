@@ -11,14 +11,24 @@
 #include <RadioLib.h>
 #include <memory>
 #include <new>
+#include <vector>
+#include <math.h>
 
 #include "helper.h"
 
 extern volatile bool receivedFlag;
 extern void webconsole_print(String in);
+extern void ota_status_v(const String& msg);
+extern void ota_progress_start(uint32_t totalChunks);
+extern void ota_progress_chunk(uint16_t seq, uint8_t retries, float snr, uint8_t ackResendCount,
+                                int8_t deviceSnr, int8_t deviceRssi, uint8_t proactiveAckResendCount);
+extern void ota_progress_end(bool success);
 
 #ifndef OTA_GS_BACKEND_URL
   #define OTA_GS_BACKEND_URL "http://fanet.breezedude.de/api/ota/check"
+#endif
+#ifndef OTA_GS_STATS_URL
+  #define OTA_GS_STATS_URL "http://fanet.breezedude.de/api/ota/stats"
 #endif
 #ifndef OTA_GS_FAST_BW_KHZ
   #define OTA_GS_FAST_BW_KHZ 500
@@ -43,7 +53,7 @@ static constexpr uint8_t FANET_ACK_TYPE = 0x00u;
 static constexpr uint8_t OTA_DEBUG_TYPE = 0x02u;
 static constexpr uint8_t OTA_MAGIC0 = 'O';
 static constexpr uint8_t OTA_MAGIC1 = 'T';
-static constexpr uint8_t OTA_PROTO = 3u;
+static constexpr uint8_t OTA_PROTO = 4u;
 static constexpr uint8_t OTA_OP_START = 0x01u;
 static constexpr uint8_t OTA_OP_CHUNK = 0x02u;
 static constexpr uint8_t OTA_OP_FINISH = 0x03u;
@@ -58,6 +68,19 @@ static constexpr uint16_t OTA_MAX_CHUNK = 192u;
 static constexpr uint32_t OTA_GS_ACK_TIMEOUT_MS = 4000UL;
 static constexpr uint16_t OTA_GS_POST_ACK_DELAY_MS = 35u;
 static constexpr uint16_t OTA_GS_RETRY_BACKOFF_MS = 80u;
+static constexpr uint8_t OTA_GS_CHUNK_MAX_ATTEMPTS = 15u;
+
+// Per-chunk transfer stats are reported as two parallel 4-bit-per-chunk
+// nibble arrays (2 chunks packed per byte, high nibble = first chunk of the
+// pair, low nibble = second; if the chunk count is odd the trailing low
+// nibble is padding):
+//  - retries: 0..14 = accepted on attempt N+1, 15 = this chunk caused the
+//    transfer to be aborted.
+//  - snr: bucket 0..15 mapping linearly onto [snrMinDb..snrMaxDb] (sent as
+//    two leading signed int8 header bytes), as seen by the GS for the
+//    chunk's ack.
+static constexpr uint8_t OTA_GS_STAT_RETRY_ABORT = 15u; // 4-bit field max (2^4 - 1)
+static constexpr uint8_t OTA_GS_STAT_SNR_BUCKETS = 16u; // 4-bit field range (2^4)
 
 struct __attribute__((packed)) ota_pkt_prefix_t {
   uint8_t magic0;
@@ -105,6 +128,10 @@ struct __attribute__((packed)) ota_ack_pkt_t {
   uint16_t next_seq;
   uint8_t status;
   uint8_t accepted_chunk;
+  uint8_t ack_resend_count; // # of times the device (re)sent this ack due to duplicate chunks
+  int8_t chunk_snr; // SNR (dB) of the most recently received chunk, as measured by the device
+  int8_t chunk_rssi; // RSSI (dBm) of the most recently received chunk, as measured by the device
+  uint8_t proactive_ack_resend_count; // subset of ack_resend_count sent proactively (no dup chunk seen yet)
 };
 
 struct OtaAnnouncement {
@@ -171,6 +198,40 @@ static String formatVersionBcd(uint16_t bcd) {
   const uint8_t minor = (uint8_t)((bcd >> 4) & 0x0Fu);
   const uint8_t patch = (uint8_t)(bcd & 0x0Fu);
   return String(major) + "." + String(minor) + "." + String(patch);
+}
+
+// Maps an SNR reading (dB) to a 4-bit bucket covering snrMinDb..snrMaxDb,
+// clamping out-of-range values to the nearest bucket. Returns bucket 0 if
+// the range is degenerate (snrMaxDb <= snrMinDb).
+static uint8_t encodeSnrBucket(float snrDb, float snrMinDb, float snrMaxDb) {
+  if(snrMaxDb <= snrMinDb) {
+    return 0u;
+  }
+  long bucket = lroundf((snrDb - snrMinDb) / (snrMaxDb - snrMinDb) * (float)(OTA_GS_STAT_SNR_BUCKETS - 1u));
+  if(bucket < 0) {
+    bucket = 0;
+  } else if(bucket > (long)(OTA_GS_STAT_SNR_BUCKETS - 1u)) {
+    bucket = (long)(OTA_GS_STAT_SNR_BUCKETS - 1u);
+  }
+  return (uint8_t)bucket;
+}
+
+// Packs two 4-bit values (0..15) into one byte, hi in bits 7-4, lo in bits 3-0.
+static uint8_t packNibbles(uint8_t hi, uint8_t lo) {
+  return (uint8_t)(((hi & 0x0Fu) << 4) | (lo & 0x0Fu));
+}
+
+// Packs a vector of 4-bit values (0..15) two per byte, padding a trailing
+// odd value's low nibble with 0.
+static std::vector<uint8_t> packNibbleArray(const std::vector<uint8_t>& values) {
+  std::vector<uint8_t> out;
+  out.reserve((values.size() + 1u) / 2u);
+  for(size_t i = 0; i < values.size(); i += 2u) {
+    const uint8_t hi = values[i];
+    const uint8_t lo = (i + 1u < values.size()) ? values[i + 1u] : 0u;
+    out.push_back(packNibbles(hi, lo));
+  }
+  return out;
 }
 
 static bool parseDebugType4(const hwInfoData& info, OtaAnnouncement& ann) {
@@ -393,7 +454,20 @@ static bool waitForPacket(uint8_t* packet, size_t& outLen, uint32_t timeoutMs) {
   return false;
 }
 
-static bool parseOtaAck(const uint8_t* packet, size_t len, uint32_t nonce, uint16_t& nextSeq, uint8_t& status) {
+// Info extracted from a device ACK packet (OTA protocol v4). chunkSnr/chunkRssi
+// are the SNR (dB) / RSSI (dBm) of the most recent chunk packet as measured by
+// the device, and proactiveAckResendCount is the subset of ackResendCount that
+// were proactive resends (no duplicate chunk seen yet) - see ota_lora.cpp.
+struct OtaAckInfo {
+  uint16_t nextSeq = 0;
+  uint8_t status = 0;
+  uint8_t ackResendCount = 0;
+  int8_t chunkSnr = 0;
+  int8_t chunkRssi = 0;
+  uint8_t proactiveAckResendCount = 0;
+};
+
+static bool parseOtaAck(const uint8_t* packet, size_t len, uint32_t nonce, OtaAckInfo& info) {
   if(len < sizeof(ota_ack_pkt_t)) {
     return false;
   }
@@ -406,16 +480,20 @@ static bool parseOtaAck(const uint8_t* packet, size_t len, uint32_t nonce, uint1
     return false;
   }
 
-  nextSeq = ack->next_seq;
-  status = ack->status;
+  info.nextSeq = ack->next_seq;
+  info.status = ack->status;
+  info.ackResendCount = ack->ack_resend_count;
+  info.chunkSnr = ack->chunk_snr;
+  info.chunkRssi = ack->chunk_rssi;
+  info.proactiveAckResendCount = ack->proactive_ack_resend_count;
   return true;
 }
 
-static bool waitForAck(uint32_t nonce, uint16_t& nextSeq, uint8_t& status, uint32_t timeoutMs) {
+static bool waitForAck(uint32_t nonce, OtaAckInfo& info, uint32_t timeoutMs) {
   uint8_t packet[255] = {0};
   size_t len = 0;
   while(waitForPacket(packet, len, timeoutMs)) {
-    if(parseOtaAck(packet, len, nonce, nextSeq, status)) {
+    if(parseOtaAck(packet, len, nonce, info)) {
       return true;
     }
     len = 0;
@@ -532,7 +610,23 @@ static bool downloadFirmwareImage(const OtaManifest& manifest, std::unique_ptr<u
   return true;
 }
 
-static bool streamFirmware(const OtaAnnouncement& ann, const OtaManifest& manifest, const uint8_t* firmwareImage) {
+// Streams the firmware image starting at chunk `startSeq`, ACK-ing each chunk
+// before sending the next. On success or failure, appends one entry per
+// attempted chunk to `chunkRetries` (retry count, or OTA_GS_STAT_RETRY_ABORT
+// if this chunk caused the transfer to be aborted), `chunkSnr` (raw SNR in
+// dB, as measured by the GS for the device's ACK) and `chunkAckResends` (the
+// device's ack_resend_count for the accepted ack, i.e. how many times the
+// device had to resend its ack for this chunk before the GS received it - 0
+// if no ack ever arrived). Additionally appends `chunkDeviceSnr`/
+// `chunkDeviceRssi` (SNR/RSSI of the chunk packet itself, as measured by the
+// device) and `chunkProactiveAckResends` (subset of the ack-resend count that
+// were proactive, i.e. sent before the device saw a duplicate chunk), so the
+// caller can report transfer quality in both directions to the backend
+// regardless of outcome.
+static bool streamFirmware(const OtaAnnouncement& ann, const OtaManifest& manifest, const uint8_t* firmwareImage,
+                            uint16_t startSeq, std::vector<uint8_t>& chunkRetries, std::vector<float>& chunkSnr,
+                            std::vector<uint8_t>& chunkAckResends, std::vector<int8_t>& chunkDeviceSnr,
+                            std::vector<int8_t>& chunkDeviceRssi, std::vector<uint8_t>& chunkProactiveAckResends) {
   if(!firmwareImage) {
     ota_status("OTA: no buffered firmware image");
     return false;
@@ -542,8 +636,8 @@ static bool streamFirmware(const OtaAnnouncement& ann, const OtaManifest& manife
 
   const uint32_t transferStartMs = millis();
   uint8_t chunk[OTA_MAX_CHUNK] = {0};
-  uint16_t seq = 0;
-  uint32_t sent = 0;
+  uint16_t seq = startSeq;
+  uint32_t sent = (uint32_t)startSeq * manifest.chunkSize;
   uint8_t lastProgress = 0;
 
   while(sent < manifest.imageSize) {
@@ -558,7 +652,13 @@ static bool streamFirmware(const OtaAnnouncement& ann, const OtaManifest& manife
     memcpy(pkt.payload, chunk, got);
 
     bool accepted = false;
-    for(uint8_t attempt = 0; attempt < 6 && !accepted; ++attempt) {
+    uint8_t retries = 0;
+    uint8_t ackResendCount = 0;
+    uint8_t proactiveAckResendCount = 0;
+    int8_t deviceSnr = 0;
+    int8_t deviceRssi = 0;
+    float snr = -20.0f; // fallback if no ACK SNR was observed for this chunk
+    for(uint8_t attempt = 0; attempt < OTA_GS_CHUNK_MAX_ATTEMPTS && !accepted; ++attempt) {
       if(attempt > 0u) {
         delay((uint32_t)OTA_GS_RETRY_BACKOFF_MS * attempt);
       }
@@ -567,28 +667,57 @@ static bool streamFirmware(const OtaAnnouncement& ann, const OtaManifest& manife
         continue;
       }
 
-      uint16_t nextSeq = 0;
-      uint8_t status = 0;
-      if(waitForAck(ann.nonce, nextSeq, status, OTA_GS_ACK_TIMEOUT_MS)) {
-        if(status == OTA_STATE_RX && nextSeq >= (uint16_t)(seq + 1u)) {
+      OtaAckInfo ackInfo;
+      if(waitForAck(ann.nonce, ackInfo, OTA_GS_ACK_TIMEOUT_MS)) {
+        snr = radio_phy->getSNR();
+        if(ackInfo.status == OTA_STATE_RX && ackInfo.nextSeq >= (uint16_t)(seq + 1u)) {
           accepted = true;
+          retries = attempt;
+          ackResendCount = ackInfo.ackResendCount;
+          proactiveAckResendCount = ackInfo.proactiveAckResendCount;
+          deviceSnr = ackInfo.chunkSnr;
+          deviceRssi = ackInfo.chunkRssi;
           delay(OTA_GS_POST_ACK_DELAY_MS);
-        } else if(status == OTA_ERR_SIZE) {
+        } else if(ackInfo.status == OTA_ERR_SIZE) {
           ota_status(String("OTA: device rejected size at seq ") + seq);
+          chunkRetries.push_back(OTA_GS_STAT_RETRY_ABORT);
+          chunkSnr.push_back(snr);
+          chunkAckResends.push_back(0);
+          chunkDeviceSnr.push_back(0);
+          chunkDeviceRssi.push_back(0);
+          chunkProactiveAckResends.push_back(0);
+          ota_progress_chunk(seq, OTA_GS_STAT_RETRY_ABORT, snr, 0, 0, 0, 0);
           return false;
         } else {
-          ota_status(String("OTA: ack mismatch seq ") + seq + " status=0x" + String(status, HEX) + " next=" + nextSeq);
+          ota_status_v(String("OTA: ack mismatch seq ") + seq + " status=0x" + String(ackInfo.status, HEX) + " next=" + ackInfo.nextSeq);
         }
-      } else if(attempt == 0u || attempt >= 4u) {
-        ota_status(String("OTA: ack timeout seq ") + seq + " try=" + (attempt + 1u) + " t=" + String((millis() - transferStartMs) / 1000.0f, 2) + "s");
+      } else {
+        ota_status_v(String("OTA: ack timeout seq ") + seq + " try=" + (attempt + 1u) + " t=" + String((millis() - transferStartMs) / 1000.0f, 2) + "s");
       }
     }
 
     if(!accepted) {
       ota_status(String("OTA: chunk retransmit failed at seq ") + seq + " after " + String((millis() - transferStartMs) / 1000.0f, 2) + " s");
+      chunkRetries.push_back(OTA_GS_STAT_RETRY_ABORT);
+      chunkSnr.push_back(snr);
+      chunkAckResends.push_back(0);
+      chunkDeviceSnr.push_back(0);
+      chunkDeviceRssi.push_back(0);
+      chunkProactiveAckResends.push_back(0);
+      ota_progress_chunk(seq, OTA_GS_STAT_RETRY_ABORT, snr, 0, 0, 0, 0);
       return false;
     }
 
+    chunkRetries.push_back(retries);
+    chunkSnr.push_back(snr);
+    chunkAckResends.push_back(ackResendCount);
+    chunkDeviceSnr.push_back(deviceSnr);
+    chunkDeviceRssi.push_back(deviceRssi);
+    chunkProactiveAckResends.push_back(proactiveAckResendCount);
+    ota_progress_chunk(seq, retries, snr, ackResendCount, deviceSnr, deviceRssi, proactiveAckResendCount);
+    ota_status_v(String("OTA: chunk seq ") + seq + " ok, retries=" + retries + " snr=" + String(snr, 1) +
+                  " ackResends=" + ackResendCount + " (proactive=" + proactiveAckResendCount + ")" +
+                  " deviceSnr=" + deviceSnr + "dB deviceRssi=" + deviceRssi + "dBm");
     sent += got;
     seq++;
 
@@ -600,6 +729,155 @@ static bool streamFirmware(const OtaAnnouncement& ann, const OtaManifest& manife
   }
 
   return sent == manifest.imageSize;
+}
+
+// Posts the per-chunk transfer stats collected by streamFirmware() to the
+// backend as a raw binary blob (Content-Type: application/octet-stream),
+// with transfer metadata as query parameters. `startSeq` is the first chunk
+// covered by `chunkRetries`/`chunkSnr` - currently always 0, but kept as an
+// explicit field so a future resumed transfer (continuing after the last
+// successfully acked chunk instead of restarting at 0) doesn't require a
+// payload format change. Best-effort: failures are logged but never abort
+// the OTA flow.
+//
+// Payload layout:
+//   [snrMinDb int8][snrMaxDb int8]
+//   [deviceSnrMinDb int8][deviceSnrMaxDb int8]
+//   [deviceRssiMinDbm int8][deviceRssiMaxDbm int8]
+//   [retries nibble array]
+//   [snr nibble array]               (GS-measured SNR of the device's ACK)
+//   [ack-resends nibble array]
+//   [device snr nibble array]        (device-measured SNR of the chunk)
+//   [device rssi nibble array]       (device-measured RSSI of the chunk)
+//   [proactive ack-resends nibble array]
+// All nibble arrays hold one 4-bit entry per chunk (see OTA_GS_STAT_* above),
+// 2 chunks packed per byte. `statCount` (= chunkRetries.size()) tells the
+// backend how many chunk entries the nibble arrays hold, i.e. each array is
+// ceil(statCount / 2) bytes long.
+static void postOtaStats(const OtaAnnouncement& ann, const OtaManifest& manifest,
+                          const std::vector<uint8_t>& chunkRetries, const std::vector<float>& chunkSnr,
+                          const std::vector<uint8_t>& chunkAckResends,
+                          const std::vector<int8_t>& chunkDeviceSnr, const std::vector<int8_t>& chunkDeviceRssi,
+                          const std::vector<uint8_t>& chunkProactiveAckResends,
+                          uint16_t startSeq, bool success) {
+  if(chunkRetries.empty()) {
+    return;
+  }
+
+  const uint32_t totalChunks = manifest.chunkSize ? (manifest.imageSize + manifest.chunkSize - 1u) / manifest.chunkSize : 0u;
+  const int32_t abortSeq = success ? -1 : (int32_t)startSeq + (int32_t)chunkRetries.size() - 1;
+
+  float snrMinDb = chunkSnr.front();
+  float snrMaxDb = chunkSnr.front();
+  for(float snr : chunkSnr) {
+    snrMinDb = min(snrMinDb, snr);
+    snrMaxDb = max(snrMaxDb, snr);
+  }
+  const int8_t snrMinDbInt = (int8_t)constrain((long)floorf(snrMinDb), -128L, 127L);
+  const int8_t snrMaxDbInt = (int8_t)constrain((long)ceilf(snrMaxDb), -128L, 127L);
+
+  int8_t deviceSnrMinDb = chunkDeviceSnr.front();
+  int8_t deviceSnrMaxDb = chunkDeviceSnr.front();
+  for(int8_t snr : chunkDeviceSnr) {
+    deviceSnrMinDb = min(deviceSnrMinDb, snr);
+    deviceSnrMaxDb = max(deviceSnrMaxDb, snr);
+  }
+
+  int8_t deviceRssiMinDbm = chunkDeviceRssi.front();
+  int8_t deviceRssiMaxDbm = chunkDeviceRssi.front();
+  for(int8_t rssi : chunkDeviceRssi) {
+    deviceRssiMinDbm = min(deviceRssiMinDbm, rssi);
+    deviceRssiMaxDbm = max(deviceRssiMaxDbm, rssi);
+  }
+
+  std::vector<uint8_t> snrBuckets;
+  snrBuckets.reserve(chunkSnr.size());
+  for(float snr : chunkSnr) {
+    snrBuckets.push_back(encodeSnrBucket(snr, (float)snrMinDbInt, (float)snrMaxDbInt));
+  }
+
+  std::vector<uint8_t> ackResendNibbles;
+  ackResendNibbles.reserve(chunkAckResends.size());
+  for(uint8_t ackResendCount : chunkAckResends) {
+    ackResendNibbles.push_back(min(ackResendCount, (uint8_t)OTA_GS_STAT_RETRY_ABORT));
+  }
+
+  std::vector<uint8_t> deviceSnrBuckets;
+  deviceSnrBuckets.reserve(chunkDeviceSnr.size());
+  for(int8_t snr : chunkDeviceSnr) {
+    deviceSnrBuckets.push_back(encodeSnrBucket((float)snr, (float)deviceSnrMinDb, (float)deviceSnrMaxDb));
+  }
+
+  std::vector<uint8_t> deviceRssiBuckets;
+  deviceRssiBuckets.reserve(chunkDeviceRssi.size());
+  for(int8_t rssi : chunkDeviceRssi) {
+    deviceRssiBuckets.push_back(encodeSnrBucket((float)rssi, (float)deviceRssiMinDbm, (float)deviceRssiMaxDbm));
+  }
+
+  std::vector<uint8_t> proactiveAckResendNibbles;
+  proactiveAckResendNibbles.reserve(chunkProactiveAckResends.size());
+  for(uint8_t proactiveCount : chunkProactiveAckResends) {
+    proactiveAckResendNibbles.push_back(min(proactiveCount, (uint8_t)OTA_GS_STAT_RETRY_ABORT));
+  }
+
+  std::vector<uint8_t> payload;
+  payload.push_back((uint8_t)snrMinDbInt);
+  payload.push_back((uint8_t)snrMaxDbInt);
+  payload.push_back((uint8_t)deviceSnrMinDb);
+  payload.push_back((uint8_t)deviceSnrMaxDb);
+  payload.push_back((uint8_t)deviceRssiMinDbm);
+  payload.push_back((uint8_t)deviceRssiMaxDbm);
+  const std::vector<uint8_t> retryBytes = packNibbleArray(chunkRetries);
+  const std::vector<uint8_t> snrBytes = packNibbleArray(snrBuckets);
+  const std::vector<uint8_t> ackResendBytes = packNibbleArray(ackResendNibbles);
+  const std::vector<uint8_t> deviceSnrBytes = packNibbleArray(deviceSnrBuckets);
+  const std::vector<uint8_t> deviceRssiBytes = packNibbleArray(deviceRssiBuckets);
+  const std::vector<uint8_t> proactiveAckResendBytes = packNibbleArray(proactiveAckResendNibbles);
+  payload.insert(payload.end(), retryBytes.begin(), retryBytes.end());
+  payload.insert(payload.end(), snrBytes.begin(), snrBytes.end());
+  payload.insert(payload.end(), ackResendBytes.begin(), ackResendBytes.end());
+  payload.insert(payload.end(), deviceSnrBytes.begin(), deviceSnrBytes.end());
+  payload.insert(payload.end(), deviceRssiBytes.begin(), deviceRssiBytes.end());
+  payload.insert(payload.end(), proactiveAckResendBytes.begin(), proactiveAckResendBytes.end());
+
+  const String url = String(OTA_GS_STATS_URL) +
+                     "?vendor=" + String(ann.vendor) +
+                     "&address=" + String(ann.address) +
+                     "&nonce=" + String(ann.nonce) +
+                     "&targetVersionBcd=" + String(manifest.targetVersionBcd) +
+                     "&imageSize=" + String(manifest.imageSize) +
+                     "&chunkSize=" + String(manifest.chunkSize) +
+                     "&totalChunks=" + String(totalChunks) +
+                     "&startSeq=" + String(startSeq) +
+                     "&statCount=" + String((uint32_t)chunkRetries.size()) +
+                     "&success=" + String(success ? 1 : 0) +
+                     "&abortSeq=" + String(abortSeq);
+
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+
+  bool began;
+  if(url.startsWith("https://")) {
+    secureClient.setInsecure();
+    secureClient.setTimeout(10000);
+    began = http.begin(secureClient, url);
+  } else {
+    plainClient.setTimeout(10000);
+    began = http.begin(plainClient, url);
+  }
+  if(!began) {
+    ota_status("OTA: stats upload begin failed");
+    return;
+  }
+
+  http.addHeader("Content-Type", "application/octet-stream");
+  const int code = http.POST(payload.data(), payload.size());
+  if(code != HTTP_CODE_OK && code != HTTP_CODE_CREATED && code != HTTP_CODE_NO_CONTENT) {
+    ota_status(String("OTA: stats upload HTTP error ") + code);
+  }
+  http.end();
 }
 
 void ota_gs_begin() {
@@ -691,10 +969,9 @@ void ota_gs_try_update(const hwInfoData& info) {
     return;
   }
 
-  uint16_t nextSeq = 0;
-  uint8_t status = 0;
+  OtaAckInfo ackInfo;
   //ota_status("OTA: waiting for device handshake response");
-  if(!waitForAck(ann.nonce, nextSeq, status, 4000) || status != OTA_STATE_RX) {
+  if(!waitForAck(ann.nonce, ackInfo, 4000) || ackInfo.status != OTA_STATE_RX) {
     ota_status("OTA: start handshake not accepted by device");
     sendAbort(ann, OTA_ERR_TIMEOUT);
     applyRadioMode(false);
@@ -704,7 +981,29 @@ void ota_gs_try_update(const hwInfoData& info) {
 
   ota_status("OTA: handshake successful, transferring firmware");
   const uint32_t transferStartMs = millis();
-  if(!streamFirmware(ann, manifest, firmwareImage.get())) {
+  // start_seq is currently always 0 (no resume support yet); kept explicit
+  // so the stats payload format already accounts for a future resumed
+  // transfer continuing from the last successfully acked chunk.
+  const uint16_t startSeq = 0u;
+  const uint32_t totalChunks = manifest.chunkSize ? (manifest.imageSize + manifest.chunkSize - 1u) / manifest.chunkSize : 0u;
+  std::vector<uint8_t> chunkRetries;
+  std::vector<float> chunkSnr;
+  std::vector<uint8_t> chunkAckResends;
+  std::vector<int8_t> chunkDeviceSnr;
+  std::vector<int8_t> chunkDeviceRssi;
+  std::vector<uint8_t> chunkProactiveAckResends;
+  chunkRetries.reserve(totalChunks);
+  chunkSnr.reserve(totalChunks);
+  chunkAckResends.reserve(totalChunks);
+  chunkDeviceSnr.reserve(totalChunks);
+  chunkDeviceRssi.reserve(totalChunks);
+  chunkProactiveAckResends.reserve(totalChunks);
+  ota_progress_start(totalChunks);
+  const bool transferOk = streamFirmware(ann, manifest, firmwareImage.get(), startSeq, chunkRetries, chunkSnr, chunkAckResends,
+                                          chunkDeviceSnr, chunkDeviceRssi, chunkProactiveAckResends);
+  postOtaStats(ann, manifest, chunkRetries, chunkSnr, chunkAckResends, chunkDeviceSnr, chunkDeviceRssi, chunkProactiveAckResends, startSeq, transferOk);
+  ota_progress_end(transferOk);
+  if(!transferOk) {
     ota_status("OTA: firmware transfer failed");
     sendAbort(ann, OTA_ERR_TIMEOUT);
     applyRadioMode(false);
@@ -721,10 +1020,11 @@ void ota_gs_try_update(const hwInfoData& info) {
     return;
   }
 
-  if(waitForAck(ann.nonce, nextSeq, status, 5000) && status == OTA_STATE_READY) {
+  OtaAckInfo finishAck;
+  if(waitForAck(ann.nonce, finishAck, 5000) && finishAck.status == OTA_STATE_READY) {
     ota_status("OTA: finished successfully");
-  } else if(status != 0) {
-    ota_status(String("OTA: finish rejected by device, status=0x") + String(status, HEX));
+  } else if(finishAck.status != 0) {
+    ota_status(String("OTA: finish rejected by device, status=0x") + String(finishAck.status, HEX));
   } else {
     ota_status("OTA: finish not acknowledged as ready");
   }
