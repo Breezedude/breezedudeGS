@@ -26,6 +26,12 @@ struct Settings {
   bool sleepScheduleEnabled;
   uint16_t sleepOffMinutes;
   uint16_t sleepOnMinutes;
+  bool receiveFlarm;
+  // Share of radio time spent off FANET, for FLARM and ADS-L together:
+  // 0 = sparing (~10%), 1 = balanced (~23%), 2 = priority (~90%)
+  uint8_t flarmDutyProfile;
+  bool receiveAdsl;
+  bool receiveFanet;
 
   Settings() {
    strncpy(wifi_ssid, DEFAULT_STA_SSID, sizeof(wifi_ssid));
@@ -46,6 +52,10 @@ struct Settings {
    sleepScheduleEnabled = false;
    sleepOffMinutes = 22 * 60;
    sleepOnMinutes = 6 * 60;
+   receiveFlarm = false;
+   flarmDutyProfile = 0;
+   receiveAdsl = false;
+   receiveFanet = true;
  }
 };
 
@@ -150,6 +160,13 @@ struct weatherData : public FanetBase<weatherData> {
     }
 };
 
+// Which radio protocol a tracking target came in on.
+enum {
+    TRACK_SRC_FANET = 0,
+    TRACK_SRC_FLARM = 1,
+    TRACK_SRC_ADSL  = 2,
+};
+
 struct trackingData : public FanetBase<trackingData> {
     float alt;
     uint16_t hdop;
@@ -160,6 +177,11 @@ struct trackingData : public FanetBase<trackingData> {
     float heading;
     bool onlineTracking;
     trck_state state;
+    // Defaults matter: the FANET unpackers fill only the fields they know about,
+    // so these must not start as garbage on a stack-allocated trackingData.
+    uint8_t srcProto = TRACK_SRC_FANET; // which radio protocol delivered this
+    bool noTrack = false;               // sender requested not to be tracked online
+    uint8_t nativeAircraftType = 0;     // aircraft type in the source protocol's own numbering
 
     void assign(const trackingData& other) {
         assignBase(other);
@@ -172,6 +194,9 @@ struct trackingData : public FanetBase<trackingData> {
         heading = other.heading;
         onlineTracking = other.onlineTracking;
         state = other.state; // either groundmode_ or -1 for flying
+        srcProto = other.srcProto;
+        noTrack = other.noTrack;
+        nativeAircraftType = other.nativeAircraftType;
     }
 };
 
@@ -270,7 +295,7 @@ typedef struct {
     unsigned int charge        :8;
   } __attribute__((packed)) fanet_packet_t4;
 
-#define FANET_HWINFO_RAW_MAX 20
+#define FANET_HWINFO_RAW_MAX 24   // type 4 repeater report: 1 + 3 + 4 * 5 bytes
 #define HWINFO_MAX_STATIONS 8
 #define HWINFO_HISTORY_PER_STATION 5
 

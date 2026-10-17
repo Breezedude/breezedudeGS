@@ -36,6 +36,16 @@ function sensorTypeToName(sensorType) {
   return `unknown(${sensorType})`;
 }
 
+const RESET_CAUSE_TEXT = ['power-on', 'watchdog', 'software', 'brown-out', 'external', 'several', 'unknown', 'unknown'];
+const AWAKE_CLASS_TEXT = ['< 1 %', '1-5 %', '5-20 %', '>= 20 %'];
+const SCHED_STATE_TEXT = ['free', 'learning', 'checking', 'synced', 'resync', '?', '?', '?'];
+const REPEATER_MODE_TEXT = ['off', 'classic', 'scheduled (listening)', 'scheduled'];
+
+function fanetIdText(vendor, address) {
+  return vendor.toString(16).toUpperCase().padStart(2, '0') +
+         address.toString(16).toUpperCase().padStart(4, '0');
+}
+
 function decodeHwInfoDebug(rawBytes) {
   const result = { decode_type: null };
   if (!Array.isArray(rawBytes) || rawBytes.length === 0) return result;
@@ -45,10 +55,17 @@ function decodeHwInfoDebug(rawBytes) {
   if (result.decode_type === 0x01 && bytes.length >= 11) {
     result.vbatt_mv = bytes[1] | (bytes[2] << 8);
     result.batt_perc = bytes[3];
-    result.pv_state = bytes[4];
+    // bit 0-1 charger state, bit 2-3 awake duty class (since firmware 1.2)
+    result.pv_state = bytes[4] & 0x03;
+    result.awake_class = (bytes[4] >> 2) & 0x03;
+    result.awake_class_text = AWAKE_CLASS_TEXT[result.awake_class];
     result.rx_count = bytes[5] | (bytes[6] << 8);
     result.forward_count = bytes[7] | (bytes[8] << 8);
     result.lbt_counter = bytes[9];
+    // resets since power-on mod 32, and the cause of the last one
+    result.resets = bytes[10] & 0x1F;
+    result.reset_cause = (bytes[10] >> 5) & 0x07;
+    result.reset_cause_text = RESET_CAUSE_TEXT[result.reset_cause];
   }
 
   if (result.decode_type === 0x02 && bytes.length >= 11) {
@@ -72,6 +89,43 @@ function decodeHwInfoDebug(rawBytes) {
     result.lbt_rssi_threshold = -bytes[2];
     result.sensor_integ_s = bytes[3];
     result.reduce_interval_voltage = 2 + bytes[4] / 100.0;
+    if (bytes.length >= 8) {
+      // Which pin map the firmware chose, and why; the bootloader version.
+      const hw = bytes[5];
+      result.hw_pin_map = hw & 0x0F;
+      result.hw_rev_text = result.hw_pin_map === 1 ? '2.5' : '2.4 or earlier';
+      result.hw_forced = ((hw >> 4) & 0x01) === 1;
+      result.hw_overruled = ((hw >> 5) & 0x01) === 1;
+      result.hw_id_pins = (hw >> 6) & 0x03;
+      const bl = bytes[6] | (bytes[7] << 8);
+      result.bootloader = bl ? `${(bl >> 12) & 0x0F}.${(bl >> 6) & 0x3F}.${bl & 0x3F}` : null;
+    }
+  }
+
+  if (result.decode_type === 0x04 && bytes.length >= 4) {
+    // Repeater report: header, then 5 bytes per followed station.
+    const flags = bytes[1];
+    result.repeater_mode = flags & 0x03;
+    result.repeater_mode_text = REPEATER_MODE_TEXT[result.repeater_mode];
+    result.repeater_scanning = ((flags >> 2) & 0x01) === 1;
+    result.repeater_stations_in_table = (flags >> 3) & 0x07;
+    result.repeater_dropped = ((flags >> 6) & 0x01) === 1;
+    result.repeater_rx_off = ((flags >> 7) & 0x01) === 1;
+    result.rx_duty = bytes[2];
+    result.forwarded = bytes[3];
+    result.stations = [];
+    for (let i = 4; i + 5 <= bytes.length; i += 5) {
+      const status = bytes[i + 4];
+      result.stations.push({
+        id: fanetIdText(bytes[i], bytes[i + 1] | (bytes[i + 2] << 8)),
+        period_s: bytes[i + 3],
+        state: status & 0x07,
+        state_text: SCHED_STATE_TEXT[status & 0x07],
+        misses: (status >> 3) & 0x03,
+        hw_state: (status >> 5) & 0x03,
+        hw_state_text: SCHED_STATE_TEXT[(status >> 5) & 0x03],
+      });
+    }
   }
 
   return result;
@@ -104,6 +158,8 @@ function buildHwInfoHtml(hi, merged) {
   }
   if (merged.vbatt_mv !== undefined)      items += row('Battery', (merged.vbatt_mv / 1000).toFixed(2) + ' V (' + merged.batt_perc + '%)');
   if (merged.pv_state !== undefined)      items += row('PV State', merged.pv_state);
+  if (merged.awake_class_text !== undefined) items += row('Awake', merged.awake_class_text);
+  if (merged.resets !== undefined)        items += row('Resets', merged.resets + ' (last: ' + merged.reset_cause_text + ')');
   if (merged.rx_count !== undefined)      items += row('FANET RX Count', merged.rx_count);
   if (merged.forward_count !== undefined) items += row('FANET FWD Count', merged.forward_count);
   if (merged.sensor_type_text !== undefined) items += row('Sensor Type', merged.sensor_type_text);
@@ -115,6 +171,20 @@ function buildHwInfoHtml(hi, merged) {
     if (merged.sensor_integ_s !== undefined) items += row('Sensor Integ.', merged.sensor_integ_s + ' s');
   }
   if (merged.reduce_interval_voltage !== undefined) items += row('Low Power Mode', merged.reduce_interval_voltage.toFixed(2) + ' V');
+  if (merged.hw_rev_text !== undefined)   items += row('Hardware', merged.hw_rev_text +
+                                            (merged.hw_forced ? ' (pinned)' : '') + (merged.hw_overruled ? ' (divider)' : ''));
+  if (merged.bootloader !== undefined)    items += row('Bootloader', merged.bootloader || 'unknown');
+  if (merged.repeater_mode !== undefined) {
+    items += row('Repeater', merged.repeater_mode_text +
+                 (merged.repeater_scanning ? ', scanning' : '') + (merged.repeater_rx_off ? ', RX off (undervoltage)' : ''));
+    items += row('Repeater RX duty', merged.rx_duty + ' %');
+    items += row('Forwarded', merged.forwarded + ' (' + merged.repeater_stations_in_table + ' stations' +
+                 (merged.repeater_dropped ? ', one dropped' : '') + ')');
+    (merged.stations || []).forEach((s) => {
+      items += row('  ' + s.id, (s.period_s ? s.period_s + ' s' : 'period ?') + ', ' + s.state_text +
+                   (s.misses ? ', ' + s.misses + ' missed' : '') + ', hwinfo ' + s.hw_state_text);
+    });
+  }
   // if (merged.slot_capacity_kb !== undefined) items += row('OTA Slot', merged.slot_capacity_kb + ' KiB');
   return `<div class="hwinfo-grid">${items}</div>`;
 }
@@ -184,6 +254,7 @@ const MOBILE_LABELS = {
   },
   trackingTable: {
     name: "Name",
+    src: "Src",
     acft: "Type",
     state: "State",
     dist: "Dist",
@@ -709,11 +780,42 @@ function updateAprsGuardUi(showMessage = false) {
   if (hint) {
     hint.style.display = setupComplete ? "none" : "block";
   }
+
+  // FLARM positions are transmitted relative to the receiver, so the station
+  // position has to be set before decoding can work at all. ADS-L sends absolute
+  // coordinates and has no such requirement.
+  const receiveFlarm = document.getElementById("receiveFlarm");
+  const flarmHint = document.getElementById("flarmHint");
+  if (receiveFlarm) {
+    receiveFlarm.disabled = !setupComplete;
+    if (!setupComplete) receiveFlarm.checked = false;
+  }
+  if (flarmHint) {
+    flarmHint.style.display = setupComplete ? "none" : "block";
+  }
+  updateRadioProtocolUi();
   if (!setupComplete && showMessage) {
     updateFieldsFromData({ msg: "APRS und Send-to-Breezedude bleiben deaktiviert: Bitte Name sowie Latitude/Longitude sorgsam setzen." });
   }
 }
 
+
+// The duty profile only means something when FANET has to share the radio with
+// at least one of the two FSK protocols. In every other case there is nothing to
+// divide, so the control is hidden rather than shown with no effect.
+function updateRadioProtocolUi() {
+  const fanet = document.getElementById("receiveFanet");
+  const flarm = document.getElementById("receiveFlarm");
+  const adsl  = document.getElementById("receiveAdsl");
+  const card  = document.getElementById("dutyProfileCard");
+  const warn  = document.getElementById("fanetOffWarning");
+
+  const fanetOn = !!(fanet && fanet.checked);
+  const fskOn   = !!((flarm && flarm.checked) || (adsl && adsl.checked));
+
+  if (card) card.style.display = (fanetOn && fskOn) ? "" : "none";
+  if (warn) warn.style.display = fanetOn ? "none" : "block";
+}
 
 function get_inputs_from_element(id){
   const inputs =  Array.from(document.getElementById(id).querySelectorAll("input, select"));
@@ -729,13 +831,17 @@ function get_inputs_from_element(id){
 
 function saveSettings() {
   const data = get_inputs_from_element('div_settings')
+  data.flarmDutyProfile = Number(data.flarmDutyProfile) || 0;
   if (!isRequiredSetupCompleteFromInputs()) {
     data.sendAPRS = false;
     data.sendBreezedude = false;
+    data.receiveFlarm = false;
     const sendAprs = document.getElementById("sendAPRS");
     const sendBreezedude = document.getElementById("sendBreezedude");
+    const receiveFlarm = document.getElementById("receiveFlarm");
     if (sendAprs) sendAprs.checked = false;
     if (sendBreezedude) sendBreezedude.checked = false;
+    if (receiveFlarm) receiveFlarm.checked = false;
     updateFieldsFromData({ msg: "APRS und Send-to-Breezedude bleiben deaktiviert bis Name und Position sorgsam gesetzt sind." });
   }
   wsSend({ cmd: "save_settings", ...data });
@@ -911,6 +1017,13 @@ setInterval(() => {
 
 function updateFieldsFromData(data) {
 
+  // Settings arriving from the device set the checkboxes directly, so the
+  // dependent visibility has to be re-evaluated afterwards.
+  if (data && (data.receiveFanet !== undefined || data.receiveFlarm !== undefined ||
+               data.receiveAdsl !== undefined)) {
+    setTimeout(updateRadioProtocolUi, 0);
+  }
+
   const updateLink = getEl("update_link");
   const updateNotice = getEl("update_notice");
 
@@ -1056,6 +1169,30 @@ window.addEventListener('load', () => {
       });
     }
 
+    const flarmVerboseToggle = document.getElementById('flarmVerboseToggle');
+    if (flarmVerboseToggle) {
+      flarmVerboseToggle.addEventListener('change', () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({cmd: "set_flarm_verbose", verbose: flarmVerboseToggle.checked}));
+        }
+      });
+    }
+
+    const adslVerboseToggle = document.getElementById('adslVerboseToggle');
+    if (adslVerboseToggle) {
+      adslVerboseToggle.addEventListener('change', () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({cmd: "set_adsl_verbose", verbose: adslVerboseToggle.checked}));
+        }
+      });
+    }
+
+    ['receiveFanet', 'receiveFlarm', 'receiveAdsl'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('change', updateRadioProtocolUi);
+    });
+    updateRadioProtocolUi();
+
 });
 
 function loadFields(){
@@ -1141,6 +1278,14 @@ function initWebSocket() {
     const otaVerboseToggle = document.getElementById('otaVerboseToggle');
     if (otaVerboseToggle && otaVerboseToggle.checked) {
       ws.send(JSON.stringify({cmd: "set_ota_verbose", verbose: true}));
+    }
+    const flarmVerboseToggle = document.getElementById('flarmVerboseToggle');
+    if (flarmVerboseToggle && flarmVerboseToggle.checked) {
+      ws.send(JSON.stringify({cmd: "set_flarm_verbose", verbose: true}));
+    }
+    const adslVerboseToggle = document.getElementById('adslVerboseToggle');
+    if (adslVerboseToggle && adslVerboseToggle.checked) {
+      ws.send(JSON.stringify({cmd: "set_adsl_verbose", verbose: true}));
     }
 
     wsHeartbeatInterval = setInterval(() => {
@@ -1255,10 +1400,12 @@ function initWebSocket() {
               snr: trk.snr !== undefined ? trk.snr + " dB" : "-",
               lastSeen: trk.tLastMsg !== undefined ? trk.tLastMsg*1000 : "-",
               state: trk.state !== undefined ? trk.state: "-",
+              // no-track targets are shown locally but never relayed to OGN
+              src: (trk.src || "FANET") + (trk.notrack ? " (no-track)" : ""),
           };
 
           upsertRow("trackingTable", rowData, liveTracking, [
-              "id", "name", "acft", "state", "dist", "alt", "spd", "climb", "heading", "rssi", "lastSeen" // "lat", "lon",
+              "id", "name", "src", "acft", "state", "dist", "alt", "spd", "climb", "heading", "rssi", "lastSeen" // "lat", "lon",
           ]);
       });
     }
