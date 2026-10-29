@@ -23,12 +23,22 @@ extern void ota_progress_start(uint32_t totalChunks);
 extern void ota_progress_chunk(uint16_t seq, uint8_t retries, float snr, uint8_t ackResendCount,
                                 int8_t deviceSnr, int8_t deviceRssi, uint8_t proactiveAckResendCount);
 extern void ota_progress_end(bool success);
+extern Settings settings;
+extern String fw_version;
 
 #ifndef OTA_GS_BACKEND_URL
   #define OTA_GS_BACKEND_URL "http://fanet.breezedude.de/api/ota/check"
 #endif
 #ifndef OTA_GS_STATS_URL
   #define OTA_GS_STATS_URL "http://fanet.breezedude.de/api/ota/stats"
+#endif
+#ifndef OTA_GS_RESULT_URL
+  #define OTA_GS_RESULT_URL "http://fanet.breezedude.de/api/ota/result"
+#endif
+// The result report is sent after the radio is back in FANET mode, but it still
+// blocks the caller - keep it short, it is best effort and never retried.
+#ifndef OTA_GS_RESULT_TIMEOUT_MS
+  #define OTA_GS_RESULT_TIMEOUT_MS 3000
 #endif
 #ifndef OTA_GS_FAST_BW_KHZ
   #define OTA_GS_FAST_BW_KHZ 500
@@ -168,6 +178,16 @@ struct OtaManifest {
   uint16_t chunkSize = OTA_MAX_CHUNK;
 };
 
+// Timing and progress of one OTA attempt, collected while it runs and sent to
+// the backend by reportOtaResult() where the attempt ends.
+struct OtaAttempt {
+  uint32_t announceMs = 0;  // millis() when the announcement was handled
+  uint32_t checkMs = 0;     // duration of the /check request
+  uint32_t downloadMs = 0;  // duration of the firmware download, 0 if not reached
+  uint32_t chunksSent = 0;  // chunks accepted by the device
+  uint32_t totalChunks = 0;
+};
+
 static bool s_busy = false;
 static uint32_t s_last_nonce = 0;
 static uint32_t s_last_attempt_ms = 0;
@@ -294,7 +314,9 @@ static String ota_force_https_url(String url) {
   return url;
 }
 
-static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
+// On failure `error` holds a short description if the backend was reached and
+// answered; it stays empty when the request never got there (no report then).
+static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest, String& error) {
   const String url = String(OTA_GS_BACKEND_URL) +
                      "?vendor=" + String(ann.vendor) +
                      "&address=" + String(ann.address) +
@@ -328,10 +350,14 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
       return false;
     }
   }
+  http.addHeader("ID", settings.deviceName);
   code = http.GET();
 
   if(code != HTTP_CODE_OK) {
     ota_status(String("OTA: backend HTTP error ") + code);
+    if(code > 0) {
+      error = String("HTTP ") + code;
+    }
     http.end();
     return false;
   }
@@ -345,6 +371,7 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
   if(err) {
     ota_status(String("OTA: JSON parse failed: ") + err.c_str());
     webconsole_print("OTA: Full response: " + responseBody);
+    error = String("JSON parse failed: ") + err.c_str();
     return false;
   }
 
@@ -386,6 +413,7 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
 
   if(manifest.firmwareUrl.isEmpty() || manifest.imageSize == 0u || manifest.imageSha256.length() != 64u || strlen(signatureRawHexCstr) != 128u) {
     ota_status("OTA: backend manifest incomplete");
+    error = "manifest incomplete";
     manifest.available = false;
     return false;
   }
@@ -394,6 +422,7 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
   if(!parseHexBytes(manifest.imageSha256, manifest.imageSha256Raw, sizeof(manifest.imageSha256Raw)) ||
      !parseHexBytes(signatureRawHex, manifest.signatureRaw, sizeof(manifest.signatureRaw))) {
     ota_status("OTA: signed manifest payload invalid");
+    error = "signed manifest payload invalid";
     manifest.available = false;
     return false;
   }
@@ -401,6 +430,7 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest) {
   const uint32_t nowTs = (uint32_t)time(nullptr);
   if(manifest.expires && nowTs && nowTs > manifest.expires) {
     ota_status("OTA: manifest expired");
+    error = String("manifest expired (") + manifest.expires + " < " + nowTs + ")";
     manifest.available = false;
     return false;
   }
@@ -570,7 +600,8 @@ static void notifyNoUpdate(const OtaAnnouncement& ann) {
   applyRadioMode(false);
 }
 
-static bool downloadFirmwareImage(const OtaManifest& manifest, std::unique_ptr<uint8_t[]>& firmwareImage) {
+// On failure `error` holds a short reason for the result report.
+static bool downloadFirmwareImage(const OtaManifest& manifest, std::unique_ptr<uint8_t[]>& firmwareImage, String& error) {
   HTTPClient http;
   http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
   int code = -1;
@@ -583,12 +614,15 @@ static bool downloadFirmwareImage(const OtaManifest& manifest, std::unique_ptr<u
   const bool useHttps = firmwareUrl.startsWith("https://");
   if(!http.begin(useHttps ? static_cast<WiFiClient&>(secureClient) : plainClient, firmwareUrl)) {
     ota_status("OTA: firmware download begin failed");
+    error = "begin failed";
     return false;
   }
 
+  http.addHeader("ID", settings.deviceName);
   code = http.GET();
   if(code != HTTP_CODE_OK) {
     ota_status(String("OTA: firmware download HTTP error ") + code);
+    error = String("HTTP ") + code;
     http.end();
     return false;
   }
@@ -596,6 +630,7 @@ static bool downloadFirmwareImage(const OtaManifest& manifest, std::unique_ptr<u
   firmwareImage.reset(new (std::nothrow) uint8_t[manifest.imageSize]);
   if(!firmwareImage) {
     ota_status("OTA: insufficient RAM for firmware buffer");
+    error = "no RAM";
     http.end();
     return false;
   }
@@ -629,6 +664,7 @@ static bool downloadFirmwareImage(const OtaManifest& manifest, std::unique_ptr<u
   http.end();
   if(received != manifest.imageSize) {
     ota_status(String("OTA: firmware preload incomplete ") + received + "/" + manifest.imageSize + " bytes");
+    error = String(received) + "/" + manifest.imageSize + " bytes";
     firmwareImage.reset();
     return false;
   }
@@ -899,9 +935,60 @@ static void postOtaStats(const OtaAnnouncement& ann, const OtaManifest& manifest
   }
 
   http.addHeader("Content-Type", "application/octet-stream");
+  http.addHeader("ID", settings.deviceName);
   const int code = http.POST(payload.data(), payload.size());
   if(code != HTTP_CODE_OK && code != HTTP_CODE_CREATED && code != HTTP_CODE_NO_CONTENT) {
     ota_status(String("OTA: stats upload HTTP error ") + code);
+  }
+  http.end();
+}
+
+// Tells the backend where an OTA attempt ended (reason "success" = installed).
+// Called once per attempt the backend offered an update for, after the radio is
+// back in FANET mode. One short POST, no retry; an endpoint the server does not
+// know yet (404) is tolerated silently.
+static void reportOtaResult(const OtaAnnouncement& ann, const OtaManifest& manifest, const OtaAttempt& attempt,
+                            const char* stage, const char* reason, const String& detail = String()) {
+  if(WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  JsonDocument doc;
+  doc["vendor"] = ann.vendor;
+  doc["address"] = ann.address;
+  doc["nonce"] = ann.nonce;
+  doc["version_bcd"] = ann.versionBcd;
+  doc["target_version_bcd"] = manifest.targetVersionBcd;
+  doc["ota_proto"] = ann.otaProto;
+  doc["stage"] = stage;
+  doc["result"] = strcmp(reason, "success") == 0 ? "ok" : "failed";
+  doc["reason"] = reason;
+  if(detail.length()) {
+    doc["detail"] = detail;
+  }
+  doc["ms_check"] = attempt.checkMs;
+  doc["ms_download"] = attempt.downloadMs;
+  doc["ms_since_announce"] = millis() - attempt.announceMs;
+  doc["chunks_sent"] = attempt.chunksSent;
+  doc["total_chunks"] = attempt.totalChunks;
+  doc["gs_fw"] = fw_version;
+  String body;
+  serializeJson(doc, body);
+  Serial.println("OTA: result report " + body);
+
+  WiFiClient client;
+  HTTPClient http;
+  http.setConnectTimeout(OTA_GS_RESULT_TIMEOUT_MS);
+  http.setTimeout(OTA_GS_RESULT_TIMEOUT_MS);
+  if(!http.begin(client, OTA_GS_RESULT_URL)) {
+    ota_status("OTA: result report begin failed");
+    return;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("ID", settings.deviceName);
+  const int code = http.POST(body);
+  if(code <= 0) {
+    ota_status(String("OTA: result report failed ") + code);
   }
   http.end();
 }
@@ -936,13 +1023,20 @@ void ota_gs_try_update(const hwInfoData& info) {
   s_last_attempt_ms = millis();
 
   OtaManifest manifest;
+  OtaAttempt attempt;
+  attempt.announceMs = millis();
   s_busy = true;
   char deviceId[16];
   snprintf(deviceId, sizeof(deviceId), "%02X%04X", ann.vendor, ann.address);
   ota_status(String("OTA: request from ") + deviceId + " with version " + formatVersionBcd(ann.versionBcd));
 
-  bool ok = queryBackend(ann, manifest);
+  String error;
+  bool ok = queryBackend(ann, manifest, error);
+  attempt.checkMs = millis() - attempt.announceMs;
   if(!ok) {
+    if(error.length()) {
+      reportOtaResult(ann, manifest, attempt, "check", "backend_error", error);
+    }
     s_busy = false;
     return;
   }
@@ -973,15 +1067,24 @@ void ota_gs_try_update(const hwInfoData& info) {
   }
   ota_status("OTA: backend signature received, device will verify");
 
+  const uint32_t totalChunks = manifest.chunkSize ? (manifest.imageSize + manifest.chunkSize - 1u) / manifest.chunkSize : 0u;
+  attempt.totalChunks = totalChunks;
+
   if(manifest.imageSize > ((uint32_t)ann.slotCapacityKb * 1024u)) {
     ota_status("OTA: image does not fit into target flash");
+    reportOtaResult(ann, manifest, attempt, "download", "image_too_large",
+                    String(manifest.imageSize) + " > " + ann.slotCapacityKb + " KB");
     s_busy = false;
     return;
   }
 
   std::unique_ptr<uint8_t[]> firmwareImage;
-  if(!downloadFirmwareImage(manifest, firmwareImage)) {
+  const uint32_t downloadStartMs = millis();
+  const bool downloaded = downloadFirmwareImage(manifest, firmwareImage, error);
+  attempt.downloadMs = millis() - downloadStartMs;
+  if(!downloaded) {
     ota_status("OTA: firmware preload failed, aborting");
+    reportOtaResult(ann, manifest, attempt, "download", "download_failed", error);
     s_busy = false;
     return;
   }
@@ -989,6 +1092,7 @@ void ota_gs_try_update(const hwInfoData& info) {
 
   ota_status("OTA: sending FANET ACK handshake");
   if(!sendFanetAck(ann)) {
+    reportOtaResult(ann, manifest, attempt, "handshake", "fanet_ack_failed");
     s_busy = false;
     return;
   }
@@ -1000,16 +1104,20 @@ void ota_gs_try_update(const hwInfoData& info) {
   ota_status("OTA: switching to transfer mode and sending start packet");
   if(!sendStart(ann, manifest)) {
     applyRadioMode(false);
+    reportOtaResult(ann, manifest, attempt, "handshake", "start_send_failed");
     s_busy = false;
     return;
   }
 
   OtaAckInfo ackInfo;
   //ota_status("OTA: waiting for device handshake response");
-  if(!waitForAck(ann.nonce, ackInfo, 4000) || ackInfo.status != OTA_STATE_RX) {
+  const bool startAcked = waitForAck(ann.nonce, ackInfo, 4000);
+  if(!startAcked || ackInfo.status != OTA_STATE_RX) {
     ota_status("OTA: start handshake not accepted by device");
     sendAbort(ann, OTA_ERR_TIMEOUT);
     applyRadioMode(false);
+    reportOtaResult(ann, manifest, attempt, "handshake", "start_not_acked",
+                    startAcked ? String("status=0x") + String(ackInfo.status, HEX) : String("timeout"));
     s_busy = false;
     return;
   }
@@ -1020,7 +1128,6 @@ void ota_gs_try_update(const hwInfoData& info) {
   // so the stats payload format already accounts for a future resumed
   // transfer continuing from the last successfully acked chunk.
   const uint16_t startSeq = 0u;
-  const uint32_t totalChunks = manifest.chunkSize ? (manifest.imageSize + manifest.chunkSize - 1u) / manifest.chunkSize : 0u;
   std::vector<uint8_t> chunkRetries;
   std::vector<float> chunkSnr;
   std::vector<uint8_t> chunkAckResends;
@@ -1038,10 +1145,13 @@ void ota_gs_try_update(const hwInfoData& info) {
                                           chunkDeviceSnr, chunkDeviceRssi, chunkProactiveAckResends);
   postOtaStats(ann, manifest, chunkRetries, chunkSnr, chunkAckResends, chunkDeviceSnr, chunkDeviceRssi, chunkProactiveAckResends, startSeq, transferOk);
   ota_progress_end(transferOk);
+  // The last stats entry of a failed transfer is the chunk that was not accepted.
+  attempt.chunksSent = chunkRetries.size() - ((!transferOk && !chunkRetries.empty()) ? 1u : 0u);
   if(!transferOk) {
     ota_status("OTA: firmware transfer failed");
     sendAbort(ann, OTA_ERR_TIMEOUT);
     applyRadioMode(false);
+    reportOtaResult(ann, manifest, attempt, "transfer", "transfer_failed");
     s_busy = false;
     return;
   }
@@ -1051,20 +1161,28 @@ void ota_gs_try_update(const hwInfoData& info) {
   if(!sendFinish(ann, manifest)) {
     sendAbort(ann, OTA_ERR_TIMEOUT);
     applyRadioMode(false);
+    reportOtaResult(ann, manifest, attempt, "finish", "finish_send_failed");
     s_busy = false;
     return;
   }
 
   OtaAckInfo finishAck;
+  const char* finishReason;
+  String finishDetail;
   if(waitForAck(ann.nonce, finishAck, 5000) && finishAck.status == OTA_STATE_READY) {
     ota_status("OTA: finished successfully");
+    finishReason = "success";
   } else if(finishAck.status != 0) {
     ota_status(String("OTA: finish rejected by device, status=0x") + String(finishAck.status, HEX));
+    finishReason = "finish_rejected";
+    finishDetail = String("status=0x") + String(finishAck.status, HEX);
   } else {
     ota_status("OTA: finish not acknowledged as ready");
+    finishReason = "finish_not_ready";
   }
 
   applyRadioMode(false);
+  reportOtaResult(ann, manifest, attempt, "finish", finishReason, finishDetail);
   s_busy = false;
 }
 
