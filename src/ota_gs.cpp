@@ -53,7 +53,13 @@ static constexpr uint8_t FANET_ACK_TYPE = 0x00u;
 static constexpr uint8_t OTA_DEBUG_TYPE = 0x02u;
 static constexpr uint8_t OTA_MAGIC0 = 'O';
 static constexpr uint8_t OTA_MAGIC1 = 'T';
-static constexpr uint8_t OTA_PROTO = 4u;
+static constexpr uint8_t OTA_PROTO = 4u;      // preferred / newest wire protocol
+static constexpr uint8_t OTA_PROTO_MIN = 3u;  // oldest wire protocol we can still speak
+// v3 and v4 share identical offer/chunk/finish/abort layouts and signed-manifest
+// payload; they differ only in the proto byte and the ACK trailer (v4 appends
+// ack_resend_count/chunk_snr/chunk_rssi/proactive_ack_resend_count). The GS
+// therefore speaks whichever version the device advertises in its HW-Info
+// announce (ann.otaProto), selected per transfer via s_active_proto below.
 static constexpr uint8_t OTA_OP_START = 0x01u;
 static constexpr uint8_t OTA_OP_CHUNK = 0x02u;
 static constexpr uint8_t OTA_OP_FINISH = 0x03u;
@@ -165,6 +171,14 @@ struct OtaManifest {
 static bool s_busy = false;
 static uint32_t s_last_nonce = 0;
 static uint32_t s_last_attempt_ms = 0;
+// Wire protocol used for the device currently being served. Set from
+// ann.otaProto at the start of ota_gs_try_update(); drives both the outgoing
+// prefix.proto and how the device's ACK is parsed.
+static uint8_t s_active_proto = OTA_PROTO;
+
+// Common ACK length shared by all protocols (through accepted_chunk). v4 appends
+// a 4-byte telemetry trailer; v3 devices send only this common prefix.
+static constexpr size_t OTA_ACK_LEN_COMMON = sizeof(ota_ack_pkt_t) - 4u;
 
 static void ota_status(const String& msg) {
   Serial.println(msg);
@@ -417,7 +431,7 @@ static bool sendFanetAck(const OtaAnnouncement& ann) {
 static void fillPrefix(ota_pkt_prefix_t& prefix, uint8_t op) {
   prefix.magic0 = OTA_MAGIC0;
   prefix.magic1 = OTA_MAGIC1;
-  prefix.proto = OTA_PROTO;
+  prefix.proto = s_active_proto;
   prefix.op = op;
 }
 
@@ -468,12 +482,14 @@ struct OtaAckInfo {
 };
 
 static bool parseOtaAck(const uint8_t* packet, size_t len, uint32_t nonce, OtaAckInfo& info) {
-  if(len < sizeof(ota_ack_pkt_t)) {
+  // Accept the common (v3) length; the v4 telemetry trailer is optional.
+  if(len < OTA_ACK_LEN_COMMON) {
     return false;
   }
 
   const ota_ack_pkt_t* ack = (const ota_ack_pkt_t*)packet;
-  if(ack->prefix.magic0 != OTA_MAGIC0 || ack->prefix.magic1 != OTA_MAGIC1 || ack->prefix.proto != OTA_PROTO || ack->prefix.op != OTA_OP_ACK) {
+  if(ack->prefix.magic0 != OTA_MAGIC0 || ack->prefix.magic1 != OTA_MAGIC1 ||
+     ack->prefix.proto != s_active_proto || ack->prefix.op != OTA_OP_ACK) {
     return false;
   }
   if(ack->nonce != nonce) {
@@ -482,10 +498,20 @@ static bool parseOtaAck(const uint8_t* packet, size_t len, uint32_t nonce, OtaAc
 
   info.nextSeq = ack->next_seq;
   info.status = ack->status;
-  info.ackResendCount = ack->ack_resend_count;
-  info.chunkSnr = ack->chunk_snr;
-  info.chunkRssi = ack->chunk_rssi;
-  info.proactiveAckResendCount = ack->proactive_ack_resend_count;
+
+  // v4 devices append per-chunk telemetry; v3 devices do not. Only read the
+  // trailer when the device speaks v4 and actually sent the full-length ACK.
+  if(s_active_proto >= 4u && len >= sizeof(ota_ack_pkt_t)) {
+    info.ackResendCount = ack->ack_resend_count;
+    info.chunkSnr = ack->chunk_snr;
+    info.chunkRssi = ack->chunk_rssi;
+    info.proactiveAckResendCount = ack->proactive_ack_resend_count;
+  } else {
+    info.ackResendCount = 0;
+    info.chunkSnr = 0;
+    info.chunkRssi = 0;
+    info.proactiveAckResendCount = 0;
+  }
   return true;
 }
 
@@ -893,6 +919,15 @@ void ota_gs_try_update(const hwInfoData& info) {
   if(!parseDebugType4(info, ann)) {
     return;
   }
+
+  // Speak whatever OTA wire protocol the device advertises. v3 (firmware
+  // <= 1.0.x) and v4 (firmware >= 1.1.x, and the bootloader-OTA updater) are
+  // supported; anything else we cannot talk to.
+  if(ann.otaProto < OTA_PROTO_MIN || ann.otaProto > OTA_PROTO) {
+    ota_status(String("OTA: unsupported device OTA protocol v") + (int)ann.otaProto);
+    return;
+  }
+  s_active_proto = ann.otaProto;
 
   if(ann.nonce == s_last_nonce && (millis() - s_last_attempt_ms) < 30000UL) {
     return;

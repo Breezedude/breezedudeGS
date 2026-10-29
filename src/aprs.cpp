@@ -180,7 +180,7 @@ void Aprs::setGPS(float lat,float lon,float alt,float speed,float heading){
 }
 */
 
-uint8_t Aprs::getSenderDetails(bool OnlineTracking, aircraft_t aircraftType) {
+uint8_t Aprs::getSenderDetails(bool OnlineTracking, aircraft_t aircraftType, uint8_t srcProto) {
     /*
       OGN 'idXX' encoding proposal:
       - Bits 0..3: Aircraft type (0-15)
@@ -196,13 +196,19 @@ uint8_t Aprs::getSenderDetails(bool OnlineTracking, aircraft_t aircraftType) {
           111 = Other
 
       We will use:
-      Bits 5..7 = 011 for FANET -> 0x60
       Bit 4 = OnlineTracking << 4
       Bits 0..3 = aircraftType & 0x0F
+
+      For FLARM and ADS-L the caller passes the aircraft type in that protocol's
+      own numbering, which is what OGN expects in the low nibble.
     */
 
-    const uint8_t FANET_TECH_BITS = 0x60; // 0110 0000 -> FANET
-    uint8_t value = FANET_TECH_BITS | ((OnlineTracking ? 1 : 0) << 4) | (aircraftType & 0x0F);
+    // 001 = FLARM, 011 = FANET, 111 = other. ADS-L has no code of its own in
+    // the OGN id byte, so it is reported as "other".
+    uint8_t techBits = 0x60;
+    if (srcProto == TRACK_SRC_FLARM) techBits = 0x20;
+    else if (srcProto == TRACK_SRC_ADSL) techBits = 0xE0;
+    uint8_t value = techBits | ((OnlineTracking ? 1 : 0) << 4) | (aircraftType & 0x0F);
     return value;
 }
 
@@ -360,6 +366,8 @@ uint8_t Aprs::getFANETAircraftType(aircraft_t aircraftType){
 
 void Aprs::sendTrackingData(trackingData *td){
     if (initOk < INIT_FULL) return;
+    // Senders that asked not to be tracked are kept locally but never relayed.
+    if (td->noTrack) return;
     if ((td->aircraftType < 0) || (td->aircraftType > 15)){
         Serial.printf("wrong aircraftType %d --> set to unknown\n",(int)(td->aircraftType));
         td->aircraftType = acft_Other;
@@ -387,9 +395,16 @@ void Aprs::sendTrackingData(trackingData *td){
     pos += snprintf(&buff[pos],255-pos,"%03d/%03d",int(td->heading),int(td->speed * 0.53996));
     pos += snprintf(&buff[pos],255-pos,"/A=%06d",int(td->alt * 3.28084));
     pos += snprintf(&buff[pos],255-pos," !W%01d%01d! ",int(latMin %10),int(latMin %10));
-    pos += snprintf(&buff[pos],255-pos,"id%02X%s ",getSenderDetails(td->onlineTracking,(aircraft_t)(td->aircraftType)),td->devId.c_str());
+    // The id byte carries the technology and, for FLARM, the original FLARM
+    // aircraft type rather than the FANET type we mapped it to for the UI.
+    uint8_t idByte = (td->srcProto == TRACK_SRC_FANET)
+        ? getSenderDetails(td->onlineTracking,(aircraft_t)(td->aircraftType))
+        : getSenderDetails(td->onlineTracking,(aircraft_t)(td->nativeAircraftType), td->srcProto);
+    pos += snprintf(&buff[pos],255-pos,"id%02X%s ",idByte,td->devId.c_str());
     pos += snprintf(&buff[pos],255-pos,"%+04.ffpm ",td->climb*196.85f);
-    pos += snprintf(&buff[pos],255-pos,"FNT1%d ",getFANETAircraftType((aircraft_t)(td->aircraftType)));
+    if (td->srcProto == TRACK_SRC_FANET){
+        pos += snprintf(&buff[pos],255-pos,"FNT1%d ",getFANETAircraftType((aircraft_t)(td->aircraftType)));
+    }
     pos += snprintf(&buff[pos],255-pos,"%0.1fdB\r\n",td->snr);
     client->print(buff);
     aprsconsole_print(buff);

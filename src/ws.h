@@ -9,6 +9,7 @@
 #include <math.h>
 #include "power_management.h"
 #include "aprs.h"
+#include "helper.h"
 
 #define HTTPTIMEOUT 1500
 
@@ -32,6 +33,8 @@ extern void webconsole_sync_client(AsyncWebSocketClient *client);
 extern void webconsole_print(String in);
 extern void aprsconsole_print(String in);
 extern bool ota_verbose_ws;
+extern bool flarm_verbose_ws;
+extern bool adsl_verbose_ws;
 
 struct ForwardQueueItem {
     String url;
@@ -344,12 +347,16 @@ String packTracking(trackingData *td) {
     t["heading"] = td->heading;
     t["track"] = td->onlineTracking;
     t["tLastMsg"] = td->timestamp;
+    t["src"] = (td->srcProto == TRACK_SRC_FLARM) ? "FLARM" : (td->srcProto == TRACK_SRC_ADSL) ? "ADS-L" : "FANET";
+    t["notrack"] = td->noTrack;
     if(td->state < trck_state_names->length()){
         t["state"] = trck_state_names[td->state];
     } else {
         t["state"] = "-";}
 
-    if(td->state < 16){ // groundtracking, set speed and elevation "-"
+    // FANET ground tracking packets carry no motion data. FLARM and ADS-L always
+    // do, even for an aircraft sitting on the ground, so they keep their values.
+    if(td->srcProto == TRACK_SRC_FANET && td->state < 16){
         t["spd"] = "-";
         t["climb"] = "-";
         t["alt"] =  "-";
@@ -454,6 +461,8 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
   else if (type == WS_EVT_DISCONNECT){
     Serial.printf("WS disconnected\r\n");
     ota_verbose_ws = false;
+    flarm_verbose_ws = false;
+    adsl_verbose_ws = false;
   }
   else if (type == WS_EVT_PING){
     Serial.printf("WS ping\r\n");
@@ -509,6 +518,22 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         resp["update_available"] = update_available;
         resp["update_version"] = update_available_version;
         resp["fanet_rx"] = fanet_rx_count;
+        if (settings.receiveFlarm) {
+            resp["flarm_status"] = flarm_enabled() ? "on" : "no position";
+            resp["flarm_rx"] = flarm_decoded;
+            resp["flarm_frames"] = flarm_rx_frames;
+            resp["flarm_crcfail"] = flarm_crc_errors;
+            resp["flarm_failed"] = flarm_decode_fail;
+            resp["flarm_switch_us"] = flarm_switch_us_max;
+            resp["flarm_late_ms"] = flarm_entry_late_ms_max;
+        }
+        if (settings.receiveAdsl) {
+            resp["adsl_status"] = adsl_enabled() ? "on" : "off";
+            resp["adsl_rx"] = adsl_decoded;
+            resp["adsl_frames"] = adsl_rx_frames;
+            resp["adsl_crcfail"] = adsl_crc_errors;
+            resp["adsl_failed"] = adsl_decode_fail;
+        }
         if (settings.batteryPowered) {
             float batteryVoltage = getBatteryVoltage();
             if (!isnan(batteryVoltage)) {
@@ -536,6 +561,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         resp["aprsServer"] = settings.aprsServer;
         resp["aprsPort"] = settings.aprsPort;
         resp["sendBreezedude"] = settings.sendBreezedude;
+        resp["receiveFlarm"] = settings.receiveFlarm;
+        resp["receiveAdsl"] = settings.receiveAdsl;
+        resp["receiveFanet"] = settings.receiveFanet;
+        resp["flarmDutyProfile"] = settings.flarmDutyProfile;
         resp["autoUpdate"] = settings.autoUpdate;
         resp["updateBranch"] = settings.updateBranch;
         String output;
@@ -696,6 +725,15 @@ else if (strcmp(cmd, "save_settings") == 0) {
         settings.sendAPRS = requestedSendAprs;
         settings.sendBreezedude = requestedSendBreezedude;
     }
+    // FLARM decoding reconstructs positions relative to the station, so it is
+    // pointless without a proper position and stays off until one is set.
+    settings.receiveFlarm  = requiredSetupComplete && doc["receiveFlarm"].as<bool>();
+    // ADS-L carries absolute coordinates, so unlike FLARM it does not depend on
+    // the station position being configured.
+    settings.receiveAdsl   = doc["receiveAdsl"].as<bool>();
+    settings.receiveFanet  = doc["receiveFanet"].as<bool>();
+    uint8_t requestedProfile = doc["flarmDutyProfile"].as<uint8_t>();
+    settings.flarmDutyProfile = (requestedProfile <= 2) ? requestedProfile : 0;
     settings.aprsPort      = doc["aprsPort"].as<int>();
     settings.autoUpdate    = doc["autoUpdate"].as<bool>();
     strncpy(settings.updateBranch, new_updateBranch, sizeof(settings.updateBranch));
@@ -714,6 +752,34 @@ else if (strcmp(cmd, "save_settings") == 0) {
         ota_verbose_ws = doc["verbose"] | false;
         JsonDocument resp;
         resp["ota_verbose"] = ota_verbose_ws;
+        String output;
+        serializeJson(resp, output);
+        client->text(output);
+    }
+
+    else if (strcmp(cmd, "set_adsl_verbose") == 0) {
+        adsl_verbose_ws = doc["verbose"] | false;
+        JsonDocument resp;
+        resp["adsl_verbose"] = adsl_verbose_ws;
+        if (adsl_verbose_ws && !adsl_enabled()) {
+            resp["msg"] = "ADS-L-Empfang ist aus - es kommen keine Frames.";
+        } else if (adsl_verbose_ws) {
+            resp["msg"] = "ADS-L-Debug an: Funk bleibt dauerhaft auf FSK, FANET-Empfang pausiert.";
+        }
+        String output;
+        serializeJson(resp, output);
+        client->text(output);
+    }
+
+    else if (strcmp(cmd, "set_flarm_verbose") == 0) {
+        flarm_verbose_ws = doc["verbose"] | false;
+        JsonDocument resp;
+        resp["flarm_verbose"] = flarm_verbose_ws;
+        if (flarm_verbose_ws && !flarm_enabled()) {
+            resp["msg"] = "FLARM-Empfang ist aus (oder die Stationsposition fehlt) - es kommen keine Frames.";
+        } else if (flarm_verbose_ws) {
+            resp["msg"] = "FLARM-Debug an: Funk bleibt dauerhaft auf FSK, FANET-Empfang pausiert.";
+        }
         String output;
         serializeJson(resp, output);
         client->text(output);

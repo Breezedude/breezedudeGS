@@ -64,7 +64,7 @@ private:
     String getTimeStringFromTimestamp(time_t timestamp);
     String buildReceiverStatusBody(const String& note);
     //uint8_t getSenderDetails(bool onlinetracking,aircraft_t aircraftType,uint8_t addressType);
-    uint8_t getSenderDetails(bool OnlineTracking, aircraft_t aircraftType);
+    uint8_t getSenderDetails(bool OnlineTracking, aircraft_t aircraftType, uint8_t srcProto = TRACK_SRC_FANET);
     String getOrigin(uint8_t addressType);
     uint8_t getFANETAircraftType(aircraft_t aircraftType);
 

@@ -216,6 +216,38 @@
         </label>
       </div>
 
+      <div class="form-section-divider">Radio protocols</div>
+
+      <div class="form-card form-card--full">
+        <label class="checkbox-label">
+          <input type="checkbox" id="receiveFanet" name="receiveFanet"> <div class="tooltip">Receive FANET<span class="tooltiptext">Weather stations and FANET tracking. Turning this off frees the radio entirely for FLARM and/or ADS-L.</span></div>
+        </label>
+        <small id="fanetOffWarning" style="display:none; color:#e67e22; margin-top:4px;">&#9888; No weather station data will be received while FANET is off.</small>
+      </div>
+
+      <div class="form-card form-card--full">
+        <label class="checkbox-label">
+          <input type="checkbox" id="receiveFlarm" name="receiveFlarm"> <div class="tooltip">Receive FLARM traffic<span class="tooltiptext">The radio can only listen to one protocol at a time, so enabling this costs some FANET reception. Requires a correct station position.</span></div>
+        </label>
+        <small id="flarmHint" style="display:none;">Set name and latitude/longitude first.</small>
+      </div>
+
+      <div class="form-card form-card--full">
+        <label class="checkbox-label">
+          <input type="checkbox" id="receiveAdsl" name="receiveAdsl"> <div class="tooltip">Receive ADS-L traffic<span class="tooltiptext">EASA ADS-L 4 SRD-860 on the M band. Shares the radio with FANET and FLARM; if FLARM is on as well, the two take turns so the total time away from FANET stays the same.</span></div>
+        </label>
+      </div>
+
+      <div class="form-card" id="dutyProfileCard">
+        <span class="info-label">Radio time for FLARM / ADS-L</span>
+        <select id="flarmDutyProfile" name="flarmDutyProfile">
+          <option value="0">Sparing - ~10% (recommended)</option>
+          <option value="1">Balanced - ~23%</option>
+          <option value="2">Priority - ~90%</option>
+        </select>
+        <small style="margin-top:4px;">Share of radio time taken away from FANET. If FLARM and ADS-L are both on, they split this share between them.</small>
+      </div>
+
       <div class="form-section-divider">Firmware Updates</div>
 
       <div class="form-card">
@@ -324,7 +356,7 @@
       <table class="fanet-table">
         <thead>
           <tr>
-            <th>ID</th><th>Name</th><th>Type</th><th>State</th>
+            <th>ID</th><th>Name</th><th>Src</th><th>Type</th><th>State</th>
             <th>Dist</th><th>Alt</th><th>Speed</th><th>Climb</th><th>Heading</th>
             <th>RSSI</th><th>Last Seen</th>
           </tr>
@@ -386,6 +418,12 @@
         <button id="clearGeneralConsole">🪠 Clear</button>
         <label class="ota-verbose-toggle" title="Zeigt alle einzelnen OTA-Paket-Status (nur für diese Sitzung, wird beim Trennen der Verbindung zurückgesetzt)">
           <input type="checkbox" id="otaVerboseToggle"> OTA Verbose
+        </label>
+        <label class="ota-verbose-toggle" title="Zeigt zu jedem empfangenen FLARM-Frame die Rohbytes, das Manchester-Ergebnis, die CRC und den Grund einer fehlgeschlagenen Dekodierung (nur für diese Sitzung)">
+          <input type="checkbox" id="flarmVerboseToggle"> FLARM Verbose
+        </label>
+        <label class="ota-verbose-toggle" title="Wie FLARM Verbose, aber für ADS-L-Frames (nur für diese Sitzung)">
+          <input type="checkbox" id="adslVerboseToggle"> ADS-L Verbose
         </label>
         <textarea class="console" id="webconsole" rows="16" readonly wrap="off"></textarea>
       </div>
