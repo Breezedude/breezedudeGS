@@ -1,0 +1,231 @@
+menu "Breezedude GS board"
+
+    config BDGS_BOARD_NAME
+        string "Board name in diagnostic reports"
+        default "heltec_wifi_lora_32_V3" if IDF_TARGET_ESP32S3
+        default "esp32c6"
+
+    comment "Pin map - defaults are Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262)"
+
+    config BDGS_PIN_LORA_SCK
+        int "LoRa SPI SCK"
+        default 9 if IDF_TARGET_ESP32S3
+        default 6 if IDF_TARGET_ESP32C6
+        default 9
+
+    config BDGS_PIN_LORA_MISO
+        int "LoRa SPI MISO"
+        default 11 if IDF_TARGET_ESP32S3
+        default 5 if IDF_TARGET_ESP32C6
+        default 11
+
+    config BDGS_PIN_LORA_MOSI
+        int "LoRa SPI MOSI"
+        default 10 if IDF_TARGET_ESP32S3
+        default 7 if IDF_TARGET_ESP32C6
+        default 3
+
+    config BDGS_PIN_LORA_CS
+        int "LoRa chip select"
+        default 8 if IDF_TARGET_ESP32S3
+        default 4 if IDF_TARGET_ESP32C6
+        default 8
+
+    config BDGS_PIN_LORA_RESET
+        int "LoRa reset"
+        default 12 if IDF_TARGET_ESP32S3
+        default 8 if IDF_TARGET_ESP32C6
+        default 12
+
+    config BDGS_PIN_LORA_DIO1
+        int "LoRa DIO1 (IRQ; DIO0 on SX1276)"
+        default 14 if IDF_TARGET_ESP32S3
+        default 3 if IDF_TARGET_ESP32C6
+        default 14
+        help
+            This pin is the light-sleep wake-up source. It must be an RTC/GPIO
+            wake capable pin - on the C6 and S3 every GPIO qualifies.
+
+    config BDGS_PIN_LORA_BUSY
+        int "LoRa BUSY (DIO1 on SX1276)"
+        default 13 if IDF_TARGET_ESP32S3
+        default 2 if IDF_TARGET_ESP32C6
+        default 13
+
+    config BDGS_PIN_LED
+        int "Status LED (-1 = none)"
+        default 35 if IDF_TARGET_ESP32S3
+        default 15 if IDF_TARGET_ESP32C6
+        default 35
+
+    config BDGS_PIN_USER_BUTTON
+        int "User button, active low (-1 = none)"
+        default 0 if IDF_TARGET_ESP32S3
+        default 9 if IDF_TARGET_ESP32C6
+        default 0
+
+    config BDGS_PIN_VEXT_CTRL
+        int "VEXT switch, active low (-1 = none)"
+        default 36 if IDF_TARGET_ESP32S3
+        default -1
+        help
+            Heltec boards gate the external 3V3 rail with this pin. Unused by the
+            ground station firmware, it is only driven to a defined state.
+
+    config BDGS_PIN_ADC_CTRL
+        int "Battery divider enable (-1 = always on)"
+        default 37 if IDF_TARGET_ESP32S3
+        default 1 if IDF_TARGET_ESP32C6
+        default 37
+
+    config BDGS_PIN_ADC_BATTERY
+        int "Battery sense ADC1 pin (-1 = no battery sensing)"
+        default 1 if IDF_TARGET_ESP32S3
+        default 0 if IDF_TARGET_ESP32C6
+        default 1
+
+    config BDGS_BATTERY_DIVIDER_RATIO_MILLI
+        int "Battery divider ratio x1000"
+        default 4900
+        help
+            Heltec V3 uses a 390k/100k divider; measured ratio is 4.9.
+
+endmenu
+
+menu "Breezedude GS features"
+
+    config BDGS_ENABLE_FSK_RX
+        bool "Receive FLARM and ADS-L (2-GFSK) besides FANET"
+        default y
+
+    config BDGS_ENABLE_LORA_OTA
+        bool "Act as LoRa OTA gateway for Breezedude sensors"
+        default y
+
+    config BDGS_OTA_BACKEND_URL
+        string "Sensor OTA manifest endpoint"
+        depends on BDGS_ENABLE_LORA_OTA
+        default "http://fanet.breezedude.de/api/ota/check"
+
+    config BDGS_OTA_STATS_URL
+        string "Sensor OTA statistics endpoint"
+        depends on BDGS_ENABLE_LORA_OTA
+        default "http://fanet.breezedude.de/api/ota/stats"
+
+    config BDGS_FW_MANIFEST_URL
+        string "Ground station firmware manifest (self update)"
+        default "http://fanet.breezedude.de/api/ota/gs-manifest"
+
+    config BDGS_FW_CHANNEL_PREFIX
+        string "Update channel prefix ('-stable' / '-beta' is appended)"
+        default "bd-gs"
+        help
+            Same channels as the Arduino firmware, so this image can be rolled
+            out to existing stations through their normal update check (see
+            BDGS_MIGRATE_ARDUINO_LAYOUT). Updates are forward only: a station
+            installs an image only if its version is higher, so as long as the
+            versions of this firmware stay above every Arduino release, an
+            Arduino image left in a channel is never installed over it.
+
+    config BDGS_FW_ALPHA_CHANNEL
+        bool "Offer the internal alpha update channel"
+        default n
+        help
+            Builds for internal pre-release testing. Only firmware built with
+            this option shows "alpha" in the web UI's update branch selection
+            and follows the <prefix>-alpha channel; regular builds turn a
+            stored "alpha" back into "stable". tools/make_release.py packages
+            such a build for the alpha channel only, never for beta/stable.
+
+    config BDGS_MIGRATE_ARDUINO_LAYOUT
+        bool "Migrate stations from the Arduino flash layout on first boot"
+        default y
+        help
+            A station updated from the Arduino firmware boots this image with
+            the old 8 MB partition table. With this option the image moves the
+            flash into its own layout (two reboots, settings kept) and then
+            fetches the web UI. See components/bdgs/core/bd_migrate.cpp.
+
+endmenu
+
+menu "Breezedude GS power management"
+
+    config BDGS_LIGHT_SLEEP
+        bool "Automatic light sleep between LoRa packets"
+        default y
+        select PM_ENABLE
+        select FREERTOS_USE_TICKLESS_IDLE
+        help
+            The radio stays in continuous receive and its DIO1 line is a GPIO
+            wake-up source, so no packet is missed while the CPU sleeps. WiFi
+            stays associated via DTIM-based modem sleep.
+
+    config BDGS_CPU_MAX_FREQ_MHZ
+        int "DFS maximum CPU frequency"
+        default 160
+        range 80 240
+
+    config BDGS_CPU_MIN_FREQ_MHZ
+        int "DFS minimum CPU frequency (40 = XTAL)"
+        default 40
+        range 10 160
+
+    config BDGS_WIFI_LISTEN_INTERVAL
+        int "WiFi listen interval (beacon intervals between wake-ups)"
+        default 10
+        range 1 20
+        help
+            How many beacon intervals the station sleeps before it wakes to
+            check for buffered traffic. At the usual 100 ms beacon interval, 10
+            means one wake-up per second instead of ~3. Each wake-up costs tens
+            of milliseconds of receiver time on a busy LAN (buffered broadcast
+            traffic), so this is the largest WiFi power lever while staying
+            associated. The trade-off is up to one second extra latency for the
+            web UI. Most APs buffer unicast frames reliably up to about 10.
+
+    config BDGS_MARK_VALID_AFTER_S
+        int "Confirm a freshly installed firmware after this many seconds"
+        default 300
+        range 30 3600
+        help
+            After an update the bootloader boots the new image "pending
+            verification". If it resets before this time (crash, watchdog,
+            stack overflow), the bootloader falls back to the previous image
+            and the station will not install that version again. The image is
+            also confirmed right before a deep sleep, which a healthy image
+            reaches on purpose.
+
+    config BDGS_TEST_CRASH_AFTER_S
+        int "TEST ONLY: abort this many seconds after boot (0 = off)"
+        default 0
+        range 0 3600
+        help
+            Builds a deliberately broken image to exercise the rollback path.
+            Never ship with a non-zero value.
+
+    config BDGS_AP_IDLE_OFF_MIN
+        int "Auto-off AP: minutes without a client before it turns off"
+        default 3
+        range 1 120
+        help
+            Only used when "Automatically turn off AP" is selected in the web
+            UI. The window opens at every real boot (not on a deep-sleep wake)
+            and on a press of the user button.
+
+    config BDGS_INTERNET_CHECK_S
+        int "Interval of the internet reachability check while it succeeds"
+        default 60
+        range 15 600
+        help
+            The check is a full HTTP request to the Breezedude backend. After a
+            failure it is repeated every 15 s regardless, so the 5 minute
+            "internet lost" watchdog still reacts in time.
+
+    config BDGS_SLEEP_HOLD_AFTER_BOOT_S
+        int "Keep the CPU awake for this long after boot"
+        default 120
+        help
+            Gives the serial provisioning handshake and the first OTA check room
+            to breathe before sleeping starts.
+
+endmenu

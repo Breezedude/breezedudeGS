@@ -1,0 +1,9 @@
+# ESP32-C6 (single RISC-V core, WiFi 6). Pin map comes from Kconfig, see
+# main/Kconfig.projbuild -> "Breezedude GS board".
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+# WiFi 6 TWT would be even cheaper than DTIM-based light sleep, but it needs an
+# AP that supports it - left off so behaviour matches the S3 build.
+CONFIG_ESP_WIFI_ENABLE_WIFI_TX_STATS=n

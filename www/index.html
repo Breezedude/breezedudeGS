@@ -2,447 +2,616 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Breezedude Groundstation</title>
-  <link rel="stylesheet" href="style.css">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-   
-  </style>
+  <title>Breezedude Groundstation</title>
+  <link rel="icon" href="favicon.ico">
+  <link rel="stylesheet" href="style.css">
+  <script>
+    // Before first paint, so the page never flashes in the wrong theme.
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('theme'); } catch (e) {}
+      if (t !== 'light' && t !== 'dark') {
+        t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
 </head>
 <body>
 
-  <!-- Theme Toggle Switch -->
-  <div class="theme-toggle">
-    <label class="switch">
-      <input type="checkbox" id="themeSwitch">
-      <span class="slider">
-        <svg class="theme-icon theme-icon--sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="8" cy="8" r="3.5"/><path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"/>
-        </svg>
-        <svg class="theme-icon theme-icon--moon" viewBox="0 0 16 18" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M13.5 10.5A7 7 0 0 1 5.5 2.5a7 7 0 1 0 8 8z"/>
-        </svg>
-      </span>
-    </label>
-  </div>
-
-  <script>
-    const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const currentTheme = localStorage.getItem("theme");
-    const body = document.body;
-    const themeSwitch = document.getElementById("themeSwitch");
-
-    // Apply stored or system theme
-    if (currentTheme === "dark") {
-      body.setAttribute("data-theme", "dark");
-      themeSwitch.checked = true;
-    } else if (currentTheme === "light") {
-      body.setAttribute("data-theme", "light");
-      themeSwitch.checked = false;
-    } else if (prefersDarkScheme.matches) {
-      body.setAttribute("data-theme", "dark");
-      themeSwitch.checked = true;
-    }
-
-    // Manual override toggle
-    themeSwitch.addEventListener("change", () => {
-      if (themeSwitch.checked) {
-        body.setAttribute("data-theme", "dark");
-        localStorage.setItem("theme", "dark");
-      } else {
-        body.setAttribute("data-theme", "light");
-        localStorage.setItem("theme", "light");
-      }
-    });
-
-    // React to system theme changes if no override set
-    prefersDarkScheme.addEventListener("change", e => {
-      if (!localStorage.getItem("theme")) {
-        body.setAttribute("data-theme", e.matches ? "dark" : "light");
-        themeSwitch.checked = e.matches;
-      }
-    });
-  </script>
-
-  <script src="app.js"></script>
-
-  <div class="page-shell">
-
-  <!-- Top Bar with Title and WS Status -->
-  <div class="page-header">
-    <div class="title-block">
-      <img class="app-logo" src="icon_512x512.png" alt="Breezedude logo">
+<header class="topbar">
+  <div class="topbar-row">
+    <div class="brand">
+      <img src="icon.png" width="34" height="34" alt="">
       <div>
-      <!-- Main Title -->
-      <h1>Breezedude Groundstation</h1>
-      <h2 id="deviceNamedisplay">Loading...</h2>
+        <div class="brand-name" id="hdrName">Groundstation</div>
+        <div class="brand-sub" id="hdrVersion">-</div>
       </div>
     </div>
-    <div class="status-panel">
-      <div id="wsStatus" style="font-size: 0.9em; color: green;">Connecting...</div>
-      <div id="wsError" style="font-size: 0.8em; color: red;"></div>
+    <div class="pills">
+      <span class="pill" id="pillWifi"><span class="dot"></span><span class="txt">WiFi</span></span>
+      <span class="pill" id="pillInternet"><span class="dot"></span><span class="txt">Internet</span></span>
+      <span class="pill" id="pillAprs"><span class="dot"></span><span class="txt">OGN</span></span>
+      <span class="pill" id="pillBreezedude"><span class="dot"></span><span class="txt">Breezedude</span></span>
+      <button class="pill lock-pill" id="lockBtn" hidden></button>
+      <button class="icon-btn" id="themeBtn" title="Switch theme" aria-label="Switch theme">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 10.5A6.5 6.5 0 0 1 5.5 2.5a6.5 6.5 0 1 0 8 8z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="tabs">
+    <a href="#dashboard" data-tab="dashboard">Dashboard</a>
+    <a href="#tools" data-tab="tools">Tools</a>
+    <a href="#settings" data-tab="settings">Settings</a>
+    <a href="#system" data-tab="system">System</a>
+  </nav>
+</header>
+
+<div class="offline" id="offline">Connection to the station lost - reconnecting…</div>
+
+<main>
+
+<!-- ================================================================ Dashboard -->
+<section class="tab" id="tab-dashboard">
+  <div class="banners" id="banners"></div>
+
+  <div class="grid grid-kpi">
+    <div class="card kpi">
+      <div class="kpi-label">Packets 24 h</div>
+      <div class="kpi-value" id="kpiPackets">-</div>
+      <div class="kpi-sub" id="kpiPacketsSub">&nbsp;</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Weather stations</div>
+      <div class="kpi-value" id="kpiStations">-</div>
+      <div class="kpi-sub" id="kpiStationsSub">&nbsp;</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Live traffic</div>
+      <div class="kpi-value" id="kpiTraffic">-</div>
+      <div class="kpi-sub" id="kpiTrafficSub">&nbsp;</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Reception</div>
+      <div class="kpi-value" id="kpiSnr">-</div>
+      <div class="kpi-sub" id="kpiSnrSub">&nbsp;</div>
+    </div>
+    <div class="card kpi" id="kpiBatteryCard" hidden>
+      <div class="kpi-label">Battery</div>
+      <div class="kpi-value" id="kpiBattery">-</div>
+      <div class="kpi-sub" id="kpiBatterySub">&nbsp;</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Uptime</div>
+      <div class="kpi-value" id="kpiUptime">-</div>
+      <div class="kpi-sub" id="kpiUptimeSub">&nbsp;</div>
     </div>
   </div>
 
-<!-- WiFi Section -->
-<div class="section">
-  <div class="section-header" onclick="toggleSection(this)">WiFi</div>
-  <div id="div_wifi" class="section-content">
-    <div class="form-grid">
-
-      <div class="form-card form-card--full" style="display:none;">
-        <div class="wifi-scan-row">
-          <span class="wifi-scan-hint">Type manually or</span>
-          <button id="wifiScanBtn" onclick="scanWiFi()">Scan WiFi</button>
-          <select id="wifiScanResults" onchange="applySelectedWiFi()" style="display:none">
-          </select>
-        </div>
-      </div>
-
-      <div class="form-card">
-        <span class="info-label">WiFi Network</span>
-        <input type="text" id="sta_ssid" name="sta_ssid" placeholder="STA SSID" oninput="validateMaxLength(this)">
-        <small id="sta_ssid_error" style="color:red; display:none;">Max. length is 64 characters</small>
-      </div>
-
-      <div class="form-card">
-        <span class="info-label">Password</span>
-        <div class="password-row">
-          <input type="password" id="sta_password" name="sta_password" placeholder="Password" oninput="validateMaxLength(this)">
-          <button type="button" class="pw-toggle" aria-label="Passwort anzeigen" title="Passwort anzeigen" onclick="togglePasswordVisibility('sta_password', this)"><span class="eye-glyph" aria-hidden="true">👁</span></button>
-        </div>
-        <small id="sta_password_error" style="color:red; display:none;">Max. length is 64 characters</small>
-      </div>
-
-      <div class="form-section-divider">Access Point</div>
-
-      <div class="form-card">
-        <span class="info-label">Hotspot Name</span>
-        <input type="text" id="ap_ssid" name="ap_ssid" placeholder="Access Point SSID" oninput="validateMaxLength(this)">
-        <small id="ap_ssid_error" style="color:red; display:none;">Max. length is 64 characters</small>
-      </div>
-
-      <div class="form-card">
-        <span class="info-label">AP Password</span>
-        <div class="password-row">
-          <input type="password" id="ap_password" name="ap_password" placeholder="Access Point Password" oninput="validateMaxLength(this)">
-          <button type="button" class="pw-toggle" aria-label="Passwort anzeigen" title="Passwort anzeigen" onclick="togglePasswordVisibility('ap_password', this)"><span class="eye-glyph" aria-hidden="true">👁</span></button>
-        </div>
-        <small id="ap_password_error" style="color:red; display:none;">Max. length is 64 characters</small>
-      </div>
-
-      <div class="form-card form-card--full">
-        <label class="checkbox-label">
-          <input type="checkbox" id="keepAP" name="keepAP" onchange="checkBatteryApWarning()"> Keep the Access Point active even when connected to the WiFi network
-        </label>
-        <small id="batteryApWarning" style="display:none; color: #e67e22; margin-top:4px; display:none;">&#9888; Keeping AP active nearly doubles power consumption (+50mA). Not recommended when battery-powered.</small>
-      </div>
-
+  <div class="card">
+    <div class="card-head">
+      <h2>Weather stations</h2>
+      <span class="muted">Click a station for details</span>
     </div>
-    <button onclick="saveWiFi()">Save WiFi Settings</button>
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Station</th><th>Wind</th><th>Gust</th><th>Temp</th><th>Humidity</th>
+            <th>Pressure</th><th>Battery</th><th>Distance</th><th>Signal</th><th>Last seen</th>
+          </tr>
+        </thead>
+        <tbody id="weatherBody"></tbody>
+      </table>
+    </div>
   </div>
-</div>
 
-<!-- Settings Section -->
-<div class="section">
-  <div class="section-header" onclick="toggleSection(this)">Settings</div>
-  <div id="div_settings" class="section-content">
-    <div class="form-grid">
+  <div class="card">
+    <div class="card-head">
+      <h2>Live traffic</h2>
+      <span class="muted">Aircraft and ground trackers, last 5 min</span>
+    </div>
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Aircraft</th><th>Source</th><th>Type</th><th>State</th><th>Distance</th>
+            <th>Altitude</th><th>Speed</th><th>Climb</th><th>Heading</th><th>Signal</th><th>Last seen</th>
+          </tr>
+        </thead>
+        <tbody id="trackingBody"></tbody>
+      </table>
+    </div>
+  </div>
 
-      <div class="form-card form-card--full">
-        <span class="info-label">Device Name</span>
-        <input type="text" id="deviceName" name="deviceName" placeholder="Name">
-        <small id="deviceNameError" style="color:red; display:none;">Invalid device name. Length 3-9 characters, chars and numbers only (A-Z, a-z and 0-9)</small>
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-head">
+        <h2>Activity, last 24 h</h2>
+        <div class="legend" id="activityLegend"></div>
       </div>
+      <div class="chart" id="chartActivity"></div>
+    </div>
 
-      <div class="form-card">
-        <span class="info-label">Longitude</span>
-        <input type="number" step="any" id="lon" name="lon" placeholder="Longitude">
+    <div class="card">
+      <div class="card-head">
+        <h2>Reception quality</h2>
+        <div class="legend">
+          <span><i class="line" style="background:var(--c-rssi)"></i>Packet RSSI</span>
+          <span><i class="line" style="background:var(--c-noise)"></i>Noise floor</span>
+          <span><i class="line" style="background:var(--c-snr)"></i>SNR</span>
+        </div>
       </div>
+      <div class="chart" id="chartSignal"></div>
+      <div class="chart small" id="chartSnr"></div>
+      <div class="facts" id="qualityFacts"></div>
+    </div>
+  </div>
 
-      <div class="form-card">
-        <span class="info-label">Latitude</span>
-        <input type="number" step="any" id="lat" name="lat" placeholder="Latitude">
+  <div class="grid grid-2">
+    <div class="card" id="batteryCard" hidden>
+      <div class="card-head">
+        <h2>Battery</h2>
+        <div class="legend" id="batteryLegend"></div>
       </div>
+      <div class="chart" id="chartBattery"></div>
+      <div class="facts" id="batteryFacts"></div>
+    </div>
 
-      <div class="form-card form-card--full">
-        <span class="info-label">Elevation (MSL)</span>
-        <input type="number" step="any" id="elevation" name="elevation" placeholder="Elevation (MSL)">
+    <div class="card">
+      <div class="card-head">
+        <h2>WiFi signal, last 24 h</h2>
+        <div class="legend">
+          <span><i class="line" style="background:var(--c-rssi)"></i>Average</span>
+          <span><i class="line" style="background:var(--c-noise)"></i>Weakest</span>
+        </div>
       </div>
+      <div class="chart" id="chartWifi"></div>
+      <div class="facts" id="wifiFacts"></div>
+    </div>
+  </div>
 
-      <div class="form-card form-card--full">
-        <label class="checkbox-label">
-          <input type="checkbox" id="batteryPowered" name="batteryPowered" onchange="toggleBatteryModeUi()"> Battery-powered
-        </label>
-        <small id="batteryApWarningSettings" style="display:none; color: #e67e22; margin-top:4px;">&#9888; "Keep AP active" is still enabled in WiFi section. Not recommended when battery-powered.</small>
+</section>
+
+<!-- ==================================================================== Tools -->
+<section class="tab" id="tab-tools">
+  <div class="card">
+    <div class="card-head">
+      <h2>Sensor firmware update</h2>
+      <span class="muted" id="otaLiveIdle">No transfer running</span>
+    </div>
+    <div id="otaLive" hidden>
+      <div class="ota-chips">
+        <span class="tag" id="otaLiveProgress">0 / 0</span>
+        <span class="tag" id="otaLiveSnr">SNR GS -</span>
+        <span class="tag" id="otaLiveDeviceSnr">SNR sensor -</span>
+        <span class="tag" id="otaLiveDeviceRssi">RSSI sensor -</span>
+        <span class="tag" id="otaLiveRetries">Retries -</span>
+        <span class="tag" id="otaLiveAckResends">ACK resends -</span>
       </div>
+      <div class="progress"><div id="otaLiveBar"></div></div>
+      <div class="ota-chart">
+        <canvas id="otaLiveCanvas"></canvas>
+        <span class="ota-axis top">SNR at the station</span>
+        <span class="ota-axis bottom">SNR at the sensor</span>
+      </div>
+      <div class="ota-chart retry">
+        <canvas id="otaLiveRetryCanvas"></canvas>
+        <span class="ota-axis bottom">Retries / ACK resends</span>
+      </div>
+      <p class="hint" id="otaLiveStatus"></p>
+    </div>
+  </div>
 
-      <div class="form-card form-card--full" id="batterySleepCard" style="display:none;">
-        <label class="checkbox-label">
-          <input type="checkbox" id="sleepScheduleEnabled" name="sleepScheduleEnabled" onchange="toggleSleepScheduleUi()"> Time-based shutdown (local time)
-        </label>
-        <div id="sleepScheduleInputs" style="display:none; flex-direction:column; gap:6px; margin-top:6px; margin-left:22px;">
-          <div>
-            <span class="info-label">Power off at</span>
-            <input type="time" id="sleepOffTime" name="sleepOffTime">
-          </div>
-          <div>
-            <span class="info-label">Power on at</span>
-            <input type="time" id="sleepOnTime" name="sleepOnTime">
-          </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>Repeater analysis</h2>
+      <button id="repeatReset">Reset</button>
+    </div>
+    <p class="hint warn" id="repeatFskHint" hidden>This station also listens for FLARM / ADS-L and hears FANET
+      only part of the time, so it can miss a copy that was sent.</p>
+
+    <div class="section-title">Repeaters</div>
+    <div class="rp-cards" id="repeaterCards"></div>
+
+    <div class="section-title rt-head">
+      <span>Timeline</span>
+      <div class="seg" id="repeatWindow">
+        <button data-min="5">5 min</button>
+        <button data-min="15" class="active">15 min</button>
+        <button data-min="30">30 min</button>
+        <button data-min="60">60 min</button>
+      </div>
+    </div>
+    <div class="rt-legend">
+      <span class="rt-group">Color: type</span>
+      <span class="rt-key"><i class="rt-mark t-weather"></i>Weather</span>
+      <span class="rt-key"><i class="rt-mark t-name"></i>Name</span>
+      <span class="rt-key"><i class="rt-mark t-hw"></i>HW info</span>
+      <span class="rt-key"><i class="rt-mark t-track"></i>Tracking</span>
+      <span class="rt-sep"></span>
+      <span class="rt-group">Fill: forward flag</span>
+      <span class="rt-key"><i class="rt-mark t-track"></i>Filled: set, asks to be repeated</span>
+      <span class="rt-key"><i class="rt-mark t-track plain"></i>Outline: not set</span>
+      <span class="rt-sep"></span>
+      <span class="rt-group">Lanes: upper sender, lower repeated copy</span>
+      <span class="rt-key"><i class="rt-mark t-track multi"></i>Several copies</span>
+    </div>
+    <div class="rt" id="repeatTimeline"></div>
+
+    <div class="section-title">Senders</div>
+    <div class="table-wrap flat">
+      <table class="data">
+        <thead><tr>
+          <th>Sender</th><th>Repeat rate</th><th>Direct signal</th><th>Repeated signal</th><th>Delay</th>
+          <th title="A packet does not name its repeater; this comes from the repeater reports">Repeated by</th><th>Last</th>
+        </tr></thead>
+        <tbody id="repeatSourceBody"></tbody>
+      </table>
+    </div>
+
+    <details class="rt-list">
+      <summary>Packet list</summary>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr>
+            <th>Sender</th><th>Time</th><th>Type</th><th>Reception</th><th>Direct</th><th>Repeated</th><th>Delay</th>
+          </tr></thead>
+          <tbody id="repeatEventBody"></tbody>
+        </table>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>APRS / OGN console</h2>
+      <button id="clearAprsConsole">Clear</button>
+    </div>
+    <p class="hint warn" id="aprsOffHint" hidden>Sending to APRS / OGN is switched off in
+      <a href="#settings">Settings → Data sharing</a>, so nothing appears here.</p>
+    <textarea class="console" id="aprsConsole" readonly wrap="off"></textarea>
+  </div>
+</section>
+
+<!-- ================================================================= Settings -->
+<section class="tab" id="tab-settings">
+  <p class="banner" id="lockedHint" hidden>Read only - changes need the password.
+    <button type="button" id="lockedUnlockBtn">Unlock</button></p>
+  <div class="grid grid-2" id="settingsForm">
+
+    <div class="card">
+      <div class="card-head"><h2>Station</h2></div>
+      <div class="form-grid">
+        <div class="field full" id="fieldDeviceName">
+          <label for="deviceName">Name</label>
+          <input type="text" id="deviceName" maxlength="9" autocomplete="off">
+          <small class="error">3-9 characters, letters and digits only</small>
+        </div>
+        <div class="field">
+          <label for="lat">Latitude</label>
+          <input type="number" step="any" id="lat">
+        </div>
+        <div class="field">
+          <label for="lon">Longitude</label>
+          <input type="number" step="any" id="lon">
+        </div>
+        <div class="field">
+          <label for="elevation">Elevation (m MSL)</label>
+          <input type="number" step="1" id="elevation">
+        </div>
+        <div class="field">
+          <span class="field-label">&nbsp;</span>
+          <button type="button" id="mapBtn">Choose on map</button>
         </div>
       </div>
 
-      <div class="form-card form-card--full">
-        <label class="checkbox-label">
-          <input type="checkbox" id="sendAPRS" name="sendAPRS" onchange="toggleAPRSInputs()"> Send data to APRS server (e.g. OGN)
-        </label>
-        <small id="aprsSetupHint" style="display:none; color: var(--muted-text);">APRS and Send-to-Breezedude are locked while default values are set. Please set device name and position (lat/lon) carefully.</small>
-        <div id="aprsInputs" style="display:flex; flex-direction:column; gap:6px; margin-top:6px; margin-left:22px;">
-          <div>
-            <span class="info-label">APRS Server</span>
-            <input type="text" id="aprsServer" name="aprsServer" placeholder="APRS Server">
+      <p class="hint" id="setupHint" hidden>Set a name and the exact position first: OGN, Breezedude and FLARM stay off until then.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>WiFi</h2></div>
+      <div class="form-grid">
+        <div class="field full">
+          <label for="sta_ssid">Network</label>
+          <div class="input-row">
+            <input type="text" id="sta_ssid" maxlength="63" autocomplete="off">
+            <button type="button" id="wifiScanBtn">Scan</button>
           </div>
-          <div>
-            <span class="info-label">APRS Port</span>
-            <input type="number" id="aprsPort" name="aprsPort" placeholder="APRS Port">
+          <select id="wifiScanResults" hidden></select>
+        </div>
+        <div class="field full">
+          <label for="sta_password">Password</label>
+          <div class="input-row">
+            <input type="password" id="sta_password" maxlength="63" autocomplete="off">
+            <button type="button" class="pw-toggle" data-for="sta_password">Show</button>
           </div>
         </div>
       </div>
-
-      <div class="form-card form-card--full">
-        <label class="checkbox-label">
-          <input type="checkbox" id="sendBreezedude" name="sendBreezedude"> <div class="tooltip">Send FANET data to Breezedude <span class="tooltiptext">This is required for detailed information such as battery charge</span></div>
-        </label>
+      <div class="section-title" style="margin-top:16px">Access point</div>
+      <div class="form-grid">
+        <div class="field">
+          <label for="ap_ssid">Name</label>
+          <input type="text" id="ap_ssid" maxlength="31" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="ap_password">Password</label>
+          <div class="input-row">
+            <input type="password" id="ap_password" maxlength="63" autocomplete="off">
+            <button type="button" class="pw-toggle" data-for="ap_password">Show</button>
+          </div>
+        </div>
       </div>
+      <label class="check">
+        <input type="checkbox" id="keepAP">
+        <span class="text">Access Point (AP) always on<small>Do not use for solar powered stations</small></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="apAutoOff">
+        <span class="text">Turn on the AP for 3 minutes after a reboot or button press<small>It stays on as long as a device is connected</small></span>
+      </label>
+      <p class="hint">Without either option the AP opens only while the WiFi connection is down.</p>
+    </div>
 
-      <div class="form-section-divider">Radio protocols</div>
-
-      <div class="form-card form-card--full">
-        <label class="checkbox-label">
-          <input type="checkbox" id="receiveFanet" name="receiveFanet"> <div class="tooltip">Receive FANET<span class="tooltiptext">Weather stations and FANET tracking. Turning this off frees the radio entirely for FLARM and/or ADS-L.</span></div>
-        </label>
-        <small id="fanetOffWarning" style="display:none; color:#e67e22; margin-top:4px;">&#9888; No weather station data will be received while FANET is off.</small>
+    <div class="card">
+      <div class="card-head"><h2>Data sharing</h2></div>
+      <label class="check">
+        <input type="checkbox" id="sendAPRS">
+        <span class="text">Send data to an APRS server (OGN)<small>Weather stations and trackers appear on glidernet.org</small></span>
+      </label>
+      <div class="form-grid indent" id="aprsFields">
+        <div class="field">
+          <label for="aprsServer">Server</label>
+          <input type="text" id="aprsServer">
+        </div>
+        <div class="field">
+          <label for="aprsPort">Port</label>
+          <input type="number" id="aprsPort">
+        </div>
       </div>
+      <label class="check">
+        <input type="checkbox" id="sendBreezedude">
+        <span class="text">Send FANET data to Breezedude<small>Needed for sensor details like battery charge, and for sensor updates</small></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="sendDiagnostics">
+        <span class="text">Send GS diagnostics to Breezedude<small>Recommended. Sends the station's state every 10 minutes to monitor it in the device portal. Turn off to save mobile data.</small></span>
+      </label>
+    </div>
 
-      <div class="form-card form-card--full">
-        <label class="checkbox-label">
-          <input type="checkbox" id="receiveFlarm" name="receiveFlarm"> <div class="tooltip">Receive FLARM traffic<span class="tooltiptext">The radio can only listen to one protocol at a time, so enabling this costs some FANET reception. Requires a correct station position.</span></div>
-        </label>
-        <small id="flarmHint" style="display:none;">Set name and latitude/longitude first.</small>
-      </div>
-
-      <div class="form-card form-card--full">
-        <label class="checkbox-label">
-          <input type="checkbox" id="receiveAdsl" name="receiveAdsl"> <div class="tooltip">Receive ADS-L traffic<span class="tooltiptext">EASA ADS-L 4 SRD-860 on the M band. Shares the radio with FANET and FLARM; if FLARM is on as well, the two take turns so the total time away from FANET stays the same.</span></div>
-        </label>
-      </div>
-
-      <div class="form-card" id="dutyProfileCard">
-        <span class="info-label">Radio time for FLARM / ADS-L</span>
-        <select id="flarmDutyProfile" name="flarmDutyProfile">
-          <option value="0">Sparing - ~10% (recommended)</option>
-          <option value="1">Balanced - ~23%</option>
-          <option value="2">Priority - ~90%</option>
+    <div class="card">
+      <div class="card-head"><h2>Radio protocols</h2></div>
+      <label class="check">
+        <input type="checkbox" id="receiveFanet">
+        <span class="text">FANET<small>Weather stations and FANET trackers</small></span>
+      </label>
+      <p class="hint warn indent" id="fanetOffWarning" hidden>No weather station data is received while FANET is off.</p>
+      <label class="check">
+        <input type="checkbox" id="receiveFlarm">
+        <span class="text">FLARM<small>Receive air traffic from FLARM equipped aircraft</small></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="receiveAdsl">
+        <span class="text">ADS-L<small>EASA ADS-L 4 SRD-860, M band</small></span>
+      </label>
+      <div class="field indent" id="dutyProfileField">
+        <label for="flarmDutyProfile">Radio time for FLARM / ADS-L</label>
+        <select id="flarmDutyProfile">
+          <option value="0">Sparing - about 10 % (recommended)</option>
+          <option value="1">Balanced - about 23 %</option>
+          <option value="2">Priority - about 90 %</option>
         </select>
-        <small style="margin-top:4px;">Share of radio time taken away from FANET. If FLARM and ADS-L are both on, they split this share between them.</small>
+        <small>The radio listens to one protocol at a time; this share is taken from FANET.</small>
       </div>
+    </div>
 
-      <div class="form-section-divider">Firmware Updates</div>
-
-      <div class="form-card">
-        <label class="checkbox-label">
-          <input type="checkbox" id="autoUpdate" name="autoUpdate"> <div class="tooltip">Automatic updates<span class="tooltiptext">Automatically update firmware over internet when new release is avaliable</span></div>
+    <div class="card">
+      <div class="card-head"><h2>Power</h2></div>
+      <label class="check">
+        <input type="checkbox" id="batteryPowered">
+        <span class="text">Battery powered<small>Measures the battery and shows its history on the dashboard</small></span>
+      </label>
+      <div class="indent" id="batteryFields">
+        <label class="check">
+          <input type="checkbox" id="solarPowered">
+          <span class="text">Solar powered<small>Marks charging and full periods in the battery history</small></span>
         </label>
+        <label class="check">
+          <input type="checkbox" id="sleepScheduleEnabled">
+          <span class="text">Switch off at night (local time)</span>
+        </label>
+        <div class="form-grid indent" id="sleepFields">
+          <div class="field">
+            <label for="sleepOffTime">Off at</label>
+            <input type="time" id="sleepOffTime">
+          </div>
+          <div class="field">
+            <label for="sleepOnTime">On at</label>
+            <input type="time" id="sleepOnTime">
+          </div>
+        </div>
       </div>
+      <p class="hint warn" id="batteryApWarning" hidden>"Access Point (AP) always on" costs about 100 mA - not suitable for a battery.</p>
+    </div>
 
-      <div class="form-card">
-        <span class="info-label">Update Branch</span>
-        <select id="updateBranch" name="updateBranch" onchange="document.getElementById('betaWarning').style.display = this.value === 'beta' ? '' : 'none'">
+
+    <div class="card">
+      <div class="card-head"><h2>Limit access</h2></div>
+      <p class="hint" id="accessState"></p>
+      <div class="btn-row" id="removePasswordRow" hidden>
+        <button type="button" id="removePasswordBtn">Remove password</button>
+      </div>
+      <details class="pw-form" id="passwordForm">
+        <summary>Change password</summary>
+        <div class="form-grid">
+          <div class="field">
+            <label for="newPassword">New password</label>
+            <input type="password" id="newPassword" autocomplete="new-password">
+          </div>
+          <div class="field">
+            <label for="newPassword2">Repeat</label>
+            <input type="password" id="newPassword2" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="setPasswordBtn">Set password</button>
+        </div>
+      </details>
+      <p class="hint">Forgot it? Unlock with the button on the station and set a new one here.
+        The password goes over the network unencrypted.</p>
+    </div>
+  </div>
+
+  <div class="savebar" id="saveBar">
+    <span class="grow">Unsaved changes</span>
+    <button id="discardBtn">Discard</button>
+    <button class="primary" id="saveSettingsBtn">Save</button>
+  </div>
+</section>
+
+<!-- =================================================================== System -->
+<section class="tab" id="tab-system">
+  <div class="grid grid-3">
+    <div class="card">
+      <div class="card-head"><h2>Device</h2></div>
+      <dl class="kv" id="deviceInfo"></dl>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Firmware</h2></div>
+      <dl class="kv">
+        <dt>Installed</dt><dd id="fwInstalled">-</dd>
+        <dt>Online</dt><dd id="fwOnline">-</dd>
+      </dl>
+      <div class="section-title" style="margin-top:14px">Automatic updates</div>
+      <label class="check">
+        <input type="checkbox" id="autoUpdate">
+        <span class="text">Install new releases automatically</span>
+      </label>
+      <div class="field">
+        <label for="updateBranch">Update channel</label>
+        <select id="updateBranch">
           <option value="stable">stable</option>
           <option value="beta">beta</option>
         </select>
-        <small id="betaWarning" style="display:none; color: var(--muted-text);">⚠ Beta branch may contain experimental features and bugs which may lead to unavailability and manual intervention. Use with caution.</small>
+        <small class="hint warn" id="branchWarning" hidden></small>
       </div>
-
+      <div class="btn-row">
+        <button id="checkUpdateBtn">Check now</button>
+      </div>
+      <div class="section-title" style="margin-top:16px">Manual update</div>
+      <p class="hint">Upload a <code>firmware.bin</code> or <code>www.bin</code>. If new firmware does not run for 5 minutes, the station returns to the current one.</p>
+      <input type="file" id="fwFile" accept=".bin" hidden>
+      <div class="btn-row">
+        <button id="fwPickBtn">Choose file…</button>
+        <span class="hint" id="fwFileName"></span>
+      </div>
+      <div class="progress" id="fwProgressWrap" hidden><div id="fwProgress"></div></div>
+      <p class="hint" id="fwStatus"></p>
     </div>
-    <button id="saveSettingsBtn" onclick="saveSettings()">Save Settings</button>
+
+    <div class="card" id="portalCard">
+      <div class="card-head"><h2>Breezedude portal</h2></div>
+      <p class="hint warn" id="diagRejected" hidden>The server rejects this station's device key. An admin has to
+        remove the station on the server before it can report again.</p>
+      <dl class="kv">
+        <dt>Diagnostics</dt><dd id="diagState">-</dd>
+      </dl>
+      <div class="btn-row">
+        <button id="claimBtn" disabled>Link to my Breezedude account</button>
+      </div>
+      <div id="claimResult" hidden>
+        <p class="hint">Valid once and for 15 minutes. If the link did not open, copy it:</p>
+        <div class="btn-row">
+          <input type="text" id="claimUrl" readonly>
+          <button id="claimCopy">Copy</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Maintenance</h2></div>
+      <div class="btn-row" style="margin-top:0">
+        <button id="rebootBtn">Restart</button>
+      </div>
+      <div class="section-title" style="margin-top:16px">Backup</div>
+      <p class="hint">The export contains all settings, passwords included.</p>
+      <input type="file" id="importFile" accept="application/json" hidden>
+      <div class="btn-row">
+        <button id="exportBtn">Export configuration</button>
+        <button id="importBtn">Import configuration</button>
+      </div>
+      <p class="hint" id="importStatus"></p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>System console</h2>
+      <button id="clearSystemConsole">Clear</button>
+    </div>
+    <div class="console-tools">
+      <label title="Every OTA packet, for this session only"><input type="checkbox" id="otaVerbose"> Sensor OTA details</label>
+      <label title="Raw bytes, Manchester result and CRC of every FLARM frame. The radio stays on FSK while on."><input type="checkbox" id="flarmVerbose"> FLARM frames</label>
+      <label title="Same for ADS-L frames"><input type="checkbox" id="adslVerbose"> ADS-L frames</label>
+    </div>
+    <textarea class="console" id="systemConsole" readonly wrap="off"></textarea>
+  </div>
+</section>
+
+</main>
+
+<div class="modal" id="mapModal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="mapTitle">
+    <div class="modal-head">
+      <h2 id="mapTitle">Station location</h2>
+      <div class="seg" id="mapBase">
+        <button type="button" data-base="map" class="active">Map</button>
+        <button type="button" data-base="sat">Satellite</button>
+      </div>
+      <span class="grow"></span>
+      <span class="mono" id="mapReadout"></span>
+      <button type="button" id="mapCancel">Cancel</button>
+      <button type="button" class="primary" id="mapApply">Apply</button>
+    </div>
+    <div class="map" id="locMap"></div>
+    <p class="hint">Click the map or drag the marker. The elevation comes from a terrain model with about 30 m
+      resolution. Map: OpenFreeMap · satellite: Esri · terrain: AWS Terrain Tiles - loaded by this browser only
+      while the map is open.</p>
   </div>
 </div>
 
-<!-- Info Section -->
-<div class="section">
-  <div class="section-header" onclick="toggleSection(this)">Info</div>
-  <div class="section-content">
-    <div class="info-grid">
-
-      <div class="info-card">
-        <span class="info-label">Firmware Version</span>
-        <span class="info-value">
-          <span id="version">-</span>
-          <a id="update_link" href="https://github.com/Breezedude/breezedudeGS/releases/latest" target="_blank" rel="noopener" style="display:none"><span id="update_notice"></span></a>
-        </span>
+<div class="modal" id="authModal" hidden>
+  <div class="modal-box modal-small" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="modal-head">
+      <h2 id="authTitle">Unlock</h2>
+      <span class="grow"></span>
+      <button type="button" id="authClose">Close</button>
+    </div>
+    <div id="authLogin">
+      <div class="field">
+        <label for="authPassword">Password</label>
+        <input type="password" id="authPassword" autocomplete="current-password">
       </div>
-
-      <div class="info-card">
-        <span class="info-label">Build Time</span>
-        <span class="info-value" id="compileTime">-</span>
+      <div class="btn-row">
+        <button type="button" class="primary" id="authLoginBtn">Unlock for 1 hour</button>
       </div>
-
-      <div class="info-card">
-        <span class="info-label">Uptime</span>
-        <span class="info-value" id="uptime">-</span>
+      <p class="hint" style="margin-top:12px">Forgot the password?
+        <button type="button" id="authButtonBtn">Unlock with the station's button</button></p>
+      <p class="hint" id="authButtonState"></p>
+    </div>
+    <div id="authSession" hidden>
+      <p class="hint" id="authSessionText"></p>
+      <div class="btn-row">
+        <button type="button" id="authLogoutBtn">Lock now</button>
       </div>
-
-      <div class="info-card">
-        <span class="info-label">WiFi</span>
-        <span class="info-value" id="sta_status">-</span>
-      </div>
-
-      <div class="info-card">
-        <span class="info-label">IP Address</span>
-        <span class="info-value" id="sta_ip">-</span>
-      </div>
-
-      <div class="info-card">
-        <span class="info-label">WiFi RSSI</span>
-        <span class="info-value" id="sta_rssi">-</span>
-      </div>
-
-      <div class="info-card">
-        <span class="info-label">Internet Access</span>
-        <span class="info-value" id="internet_connection">-</span>
-      </div>
-
-      <div class="info-card">
-        <span class="info-label">APRS</span>
-        <span class="info-value" id="aprs_status">-</span>
-      </div>
-
-      <div class="info-card">
-        <span class="info-label">FANET Packets RX</span>
-        <span class="info-value" id="fanet_rx">-</span>
-      </div>
-
-      <div class="info-card" id="batteryInfoCard" style="display:none;">
-        <span class="info-label">Battery</span>
-        <span class="info-value" id="batteryVoltage">-</span>
-      </div>
-
     </div>
   </div>
 </div>
 
-  <!-- FANET Section -->
-  <div class="section">
-    <div class="section-header" onclick="toggleSection(this)">FANET</div>
-    <div class="section-content">
-
-
-      <h3>Weather Stations</h3>
-      <table class="fanet-table">
-        <thead>
-          <tr>
-            <th>ID</th><th>Name</th><th>Dist</th>
-            <th>Temp</th><th>Wind Dir</th><th>Wind Spd</th><th>Gust</th>
-            <th>Hum. %</th><th>Baro</th><th>SoC</th><th>RSSI</th><th>Last Seen</th>
-          </tr>
-        </thead>
-        <tbody id="weatherTable">
-        </tbody>
-      </table>
-
-      <h3>Live Tracking</h3>
-      <table class="fanet-table">
-        <thead>
-          <tr>
-            <th>ID</th><th>Name</th><th>Src</th><th>Type</th><th>State</th>
-            <th>Dist</th><th>Alt</th><th>Speed</th><th>Climb</th><th>Heading</th>
-            <th>RSSI</th><th>Last Seen</th>
-          </tr>
-        </thead>
-        <tbody id="trackingTable">
-        </tbody>
-      </table>
-
-
-    </div>
-  </div>
-
-  <!-- Tools Section -->
-<div class="section">
-  <div class="section-header" onclick="toggleSection(this)">Tools</div>
-  <div class="section-content">
-    <button id="reboot" onclick="sendReboot()">↺ Reboot</button> <br>
-    <hr>
-
-    <input type="file" id="fwfile" style="display:none"  accept=".bin"  onchange="uploadFirmware()">
-    <button onclick="document.getElementById('fwfile').click()">🗸 Software Update</button> <br>
-    <div id="otaStatus" style="font-size: 0.8em;"></div>
-    <hr>
-    <button onclick="downloadUserData()">🖫 Export Config</button><br>
-    <input id='restore_config' type="file" accept="application/json" style="display:none" onchange="importUserData(event)">
-    <button id='import_config' onclick="document.getElementById('restore_config').click()">🗁 Import Config</button>
-    <button id="btn_save_all" style="display:none" onclick="save_all()">Save</button>
-    <span id="import_status"></span>
-    <hr>
-    <h4>Console</h4>
-
-    <div id="otaLiveSection" class="ota-live" style="display:none;">
-      <div class="ota-live-head">
-        <span class="ota-live-title">🚀 OTA-Übertragung</span>
-        <span id="otaLiveProgress" class="ota-live-chip">0 / 0</span>
-        <span id="otaLiveSnr" class="ota-live-chip ota-live-chip--snr">SNR GS: – dB</span>
-        <span id="otaLiveDeviceSnr" class="ota-live-chip ota-live-chip--device-snr">SNR Device: – dB</span>
-        <span id="otaLiveDeviceRssi" class="ota-live-chip ota-live-chip--device-rssi">RSSI Device: – dBm</span>
-        <span id="otaLiveRetries" class="ota-live-chip ota-live-chip--retry">Retries: –</span>
-        <span id="otaLiveAckResends" class="ota-live-chip ota-live-chip--ackresend">ACK-Resends: –</span>
-      </div>
-      <div class="ota-live-chart">
-        <canvas id="otaLiveCanvas"></canvas>
-        <div class="ota-live-axis-label ota-live-axis-label--top">SNR GS (dB)</div>
-        <div class="ota-live-axis-label ota-live-axis-label--zero">0</div>
-        <div class="ota-live-axis-label ota-live-axis-label--bottom">SNR Device (dB)</div>
-        <div class="ota-live-axis-label ota-live-axis-label--rssi">RSSI Device</div>
-      </div>
-      <div class="ota-live-chart ota-live-chart--retry">
-        <canvas id="otaLiveRetryCanvas"></canvas>
-        <div class="ota-live-axis-label ota-live-axis-label--bottom">Retries / ACK-Resends</div>
-      </div>
-      <div id="otaLiveStatus" class="ota-live-status"></div>
-    </div>
-
-    <details open>
-      <summary>System Console</summary>
-      <div style="margin-top:8px;">
-        <button id="clearGeneralConsole">🪠 Clear</button>
-        <label class="ota-verbose-toggle" title="Zeigt alle einzelnen OTA-Paket-Status (nur für diese Sitzung, wird beim Trennen der Verbindung zurückgesetzt)">
-          <input type="checkbox" id="otaVerboseToggle"> OTA Verbose
-        </label>
-        <label class="ota-verbose-toggle" title="Zeigt zu jedem empfangenen FLARM-Frame die Rohbytes, das Manchester-Ergebnis, die CRC und den Grund einer fehlgeschlagenen Dekodierung (nur für diese Sitzung)">
-          <input type="checkbox" id="flarmVerboseToggle"> FLARM Verbose
-        </label>
-        <label class="ota-verbose-toggle" title="Wie FLARM Verbose, aber für ADS-L-Frames (nur für diese Sitzung)">
-          <input type="checkbox" id="adslVerboseToggle"> ADS-L Verbose
-        </label>
-        <textarea class="console" id="webconsole" rows="16" readonly wrap="off"></textarea>
-      </div>
-    </details>
-
-    <details style="margin-top:10px;">
-      <summary>APRS Console</summary>
-      <div style="margin-top:8px;">
-        <button id="clearAprsConsole">🪠 Clear</button>
-        <textarea class="console" id="aprsconsole" rows="12" readonly wrap="off"></textarea>
-      </div>
-    </details>
-
-  </div>
-</div>
-  <p id="status"></p>
-  </div>
-
-  <div id="toastContainer" class="toast-container"></div>
-
+<div class="toasts" id="toasts"></div>
+<script src="app.js"></script>
+  <div class="rt-tip" id="repeatTip" hidden></div>
 </body>
 </html>

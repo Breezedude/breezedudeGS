@@ -1,0 +1,18 @@
+# Breezedude GS - flash layout, the first 4 MB of every board.
+#
+# The web UI lives in a single (non-redundant) LittleFS partition; the firmware
+# carries an embedded fallback updater page, so a stale or empty "www" partition
+# never bricks the station - it can always be re-uploaded from the recovery page.
+#
+# fwstore keeps firmware images for sensors (storage/bd_fwstore.cpp). Boards
+# with 8 MB get partitions_8mb.csv: the same table plus fwstore_ext.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0xD000,
+otadata,    data, ota,      0x16000,  0x2000,
+phy_init,   data, phy,      0x18000,  0x1000,
+app0,       app,  ota_0,    0x20000,  0x1A0000,
+app1,       app,  ota_1,    0x1C0000, 0x1A0000,
+www,        data, littlefs, 0x360000, 0x40000,
+fwstore,    data, 0x40,     0x3A0000, 0x50000,
+coredump,   data, coredump, 0x3F0000, 0x10000,

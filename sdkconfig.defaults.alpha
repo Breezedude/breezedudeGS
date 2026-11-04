@@ -1,0 +1,9 @@
+# Internal alpha builds - layered on top of sdkconfig.defaults:
+#
+#   idf.py -B build.alpha -D SDKCONFIG=sdkconfig.alpha \
+#          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.alpha" build
+#   python tools/make_release.py --build build.alpha
+#
+# The web UI then offers the "alpha" update branch. make_release.py packages
+# such a build for the alpha channel only.
+CONFIG_BDGS_FW_ALPHA_CHANNEL=y

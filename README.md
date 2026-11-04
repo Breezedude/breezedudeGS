@@ -1,134 +1,111 @@
-# 📡 breezedudeGS  
-Basic FANET OGN Groundstation based on ESP32 + SX1262
+# 📡 Breezedude Groundstation
 
-## ⁉️ Why another groundstation software?
+A FANET ground station for ESP32-S3 boards: it receives weather stations and
+live tracking over the air and brings them to the internet - to the Breezedude
+server and to OGN.
 
-Currently, the main groundstation options are [GxAirCom](https://github.com/gereic/GXAirCom) and [SDR-based OGN](https://github.com/glidernet/ogn-rf) receivers.  
-As long as the OGN receiver software remains closed source and does some shady deals with FLARM, I will not support it. FLARM reception is also not intended in this project.
+## Why a ground station of our own?
 
-Both GxAirCom and SDR-based solutions only publish data to OGN, which has some disadvantages — such as reduced accuracy (e.g., windspeed conversion to integer knots) and missing data like battery state of charge.  
+Breezedude wind sensors are more than data sources. They are updated over the
+air, configured remotely and monitored in the field, and all of that runs
+through the ground stations near them. Existing ground station software only
+forwards data to OGN - with reduced accuracy (wind rounded to whole knots) and
+without battery state, firmware updates or remote configuration.
 
-GxAirCom technically has features to address these issues, but it is overloaded: it can be used as a variometer, flying device, display unit, and cellular modem. The result is a bloated codebase with limited maintenance. Some features are broken or hard to fix.
+This firmware is what makes the Breezedude ecosystem possible: it is the link
+between the sensors on the hill and the server, in both directions.
 
-So, why not start from scratch?  
-This project is a **simple groundstation** that acts purely as a **gateway for FANET data to the internet** — nothing more. It includes useful features like over-the-air updates via a web interface and live viewing of received data.
+## Features
 
-## ⚙️ Hardware support
+**Reception**
+- Made for FANET: weather stations, live tracking, names, device info
+- Also decodes FLARM and ADS-L air traffic (optional)
+- Forwards to the Breezedude server and to OGN (APRS)
 
-Currently designed for the **[Heltec Wireless Stick V3 Lite](https://heltec.org/project/wireless-stick-lite-v2/)** a **ESP32-S3 + SX1262** board.  
-Where to buy:    
-* [DE - OpenElab](https://openelab.io/de/products/heltec-wireless-stick-lite-esp32s3)
-* [CN - Aliexpress (868MHz)](https://de.aliexpress.com/item/1005006340203806.html)
+**Breezedude sensors**
+- Over-the-air firmware updates for sensors in range, with live progress and
+  an analysis of every update attempt
+- Remote configuration of sensors
+- Repeater monitoring: which packets arrive directly, which only through a
+  repeater
 
-Multicore is not explicitly required. The project uses **[RadioLib](https://github.com/jgromes/RadioLib)** for flexible radio support.
+**Station**
+- ESP-IDF with automatic light sleep - about 15 mA at 5 V instead of 60 mA
+  with the previous firmware, suitable for solar and battery stations
+- Battery monitoring and an optional night-time switch-off
+- Web interface with live data, 24 h statistics, reception quality and
+  system console
+- Settings can be protected by a password; everyone in the network can still
+  view everything
+- Remote monitoring in the [device portal](https://devices.breezedude.de) -
+  link the station under **System → Breezedude portal**
+- Automatic firmware updates with rollback if a new version does not start
 
-## ✅ Features
+## Hardware
 
-- Receives FANET weather data, live tracking, and names  
-- Sends received FANET data to APRS servers like OGN
-- Optionally posts data to an HTTP API endpoint (e.g., breezedude server)  
-- Simple and modern web UI with captive portal and WebSocket live data
-- Web updater (firmware & web)
-- Remote configuration updates for Breezedude wind sensors via LoRa
-- Over-the-air firmware updates for Breezedude devices
+Designed for the **Heltec Wireless Stick Lite V3** (ESP32-S3 + SX1262).
+Other Heltec V3 boards with ESP32-S3 and SX1262 or SX1276 and 4 MB or 8 MB flash
+work as well.
 
-## 🚫 Not Features
+Where to buy:
+- [DE - OpenElab](https://openelab.io/de/products/heltec-wireless-stick-lite-esp32s3)
+- [CN - AliExpress (868 MHz)](https://de.aliexpress.com/item/1005006340203806.html)
 
-- No FANET frame forwarding — this is an internet gateway; who would receive them? 
-- No third-party weather station data sent out to FANET  
-- Not a weather station, no display, no external sensors  
-- Wi-Fi only for now — cellular support may be added later (only for solar-powered hardware)
+## Installation
 
-If you miss some features let me know.
+Use the web installer - no tools needed, only Chrome or Edge on a desktop:
 
-## Power Consuption
-using a stock Heltec Wireless Stick V3 Lite:
-- BreezedudeGS AP+STA: avg. 124mA @ 5V
-- BreezedudeGS STA: avg. 59mA @ 5V
+👉 **[install.breezedude.de - Groundstation](https://install.breezedude.de/tools/groundstation-install.html)**
 
+Name, position and WiFi can be entered right there during flashing.
 
-## Installing Using WebFlasher (recommended)
-Visit [Breezedude Web Installer](https://install.breezedude.de/tools/groundstation-install.html) (requires Chrome or a [WebSerial compatible](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API#browser_compatibility) browser on desktop)
-1. Connect the Heltec Wireless Stick to your computer using a USB C cable
+## Setup
 
-2. Click Connect. A popup Window opens in yur browser. You should see a CP2102 device in the list. Seldt it an continue     
-<img width="350" alt="image" src="https://github.com/user-attachments/assets/3b85e4ce-6576-4db2-aef7-6748996edf04" />
-     
-3. Wait for the installation to finish. During flashing you can enter the stations settings, it will be applied afterwards.
-<img width="350" src="https://github.com/user-attachments/assets/db24c6b9-1a39-4978-90d6-e772b184b3cb" />
+If you did not enter the WiFi during installation:
 
-5. If you did not setup the WiFi directly, you should find a "BD-Groundstation" WiFi. Connect using the default password `configureme`. Continue with the Configuration
-<img width="150" alt="image" src="https://github.com/user-attachments/assets/b4301a59-db89-4be0-bde2-599cbccdac62" />
-
-## 🎚️ Configuration
-- Flash device and connect to WiFi AP `BD-Groundstation` default password is `configureme`
-- Follow captive portal or open [192.168.4.1](http://192.168.4.1) if you get not directed automatically
-- Set up your values for WiFi, name and position
-- If everything is set up correctly, enable sending data to OGN by enableing the checkbox and filling `aprs.glidernet.org` in APRS Server. Port is 14580
+1. Connect to the WiFi **`BD-Groundstation`**, password **`configureme`**
+2. The setup page opens by itself, otherwise open [192.168.4.1](http://192.168.4.1)
+3. Enter your WiFi, the station's name and its exact position, then save
 
 > [!IMPORTANT]
-> Make sure to set a proper location and name.
+> Forwarding to OGN and Breezedude only starts once a name and a real
+> position are set.
 
-If something went wrong, you can reset to factory config by pressing and holding user button *shortly after* pressing Reset button. It will be confirmed by a short blink of the white onboard LED. If pressing user button while pressing reset button you will enter esp download mode.
+## Updates
 
-For debugging you may connect to your device using [Breezedude Web Installer](https://install.breezedude.de/) and open the console by clicking `Logs & Console`
+Turn on **automatic updates** under **System → Firmware** - recommended. The station then keeps
+itself up to date; a version that does not start properly is rolled back
+automatically.
 
-## 🔧 Remote Configuration Updates
+| Channel | For whom |
+|---|---|
+| **stable** | Everyone. Thoroughly tested - the carefree choice |
+| **beta** | Gets new versions earlier |
+| **alpha** | Developers and testers only - may break things |
 
-The Ground Station automatically polls the Breezedude backend for pending configuration updates for all known devices.
+Stations running the previous Arduino firmware (0.6.x) update to this one
+automatically and keep their settings.
 
-**How it works:**
-1. Configuration changes and firmware selection can be made in a UI (coming soon) and will be stored in the Database
-2. Breezedude sends firmware version to Ground Station. Groundstation requests server for update.
-3. If any updates are pending the GS receives a signed packet and a unique `session_id`
-4. The packet is transmitted via LoRa to the target device
-5. The target device checks the signature and applies changes to flash. Acceptance is confirmed to Ground Station.
-5. GS reports the confirmation to backend using the `session_id`
+Manual update: download `firmware.bin` and `www.bin` from the
+[releases](https://github.com/Breezedude/breezedudeGS/releases) and upload them
+under **System → Firmware → Manual update** - `www.bin` first, then
+`firmware.bin` (the station restarts after it).
 
-**Security:**
-- All config packets are cryptographically signed by the backend (ECDSA P-256)
-- Each device verifies the signature using its unique UUID suffix
-- Session IDs prevent API spoofing attacks
+## Help
 
-**Monitoring:**
-- Config and firmware update activities are logged to serial output and web console.
+- **Forgot the password?** Unlock with the button on the station, then set a
+  new one under **Settings → Limit access**.
+- **Reset all settings:** press and hold the user button right after pressing
+  the reset button, until the white LED blinks.
+- **Logs:** connect the station by USB and open *Logs & Console* in the
+  [web installer](https://install.breezedude.de/).
 
-## ↗ Updating
-### Using Auto-update (recommended)
-Select `stable` or `beta` channel in the stations webinterface. It will automatically check for updates and install them.
-### Manual Web Update
-Get the current version from [releases](https://github.com/thezenox/breezedudeGS/releases)
-Open configuration page of breezedude groundstation
-- (optional) Backup the settings by clicking `Export Config` in Tools
-- In Tools select 'Update' and upload `littlefs.bin`
-- In Tools select 'Update' and upload `firmware_update.bin`
+Developers: building from source and internals are described in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-(optional) Restore Config if its broken/reset by uploading your backup file. Don't forget to click `Save` to write the uploaded settings
-This should work most of the time. If some changes break the updater, an clean upload with WebFlasher/PIO may be required.
+## License
 
-### Using Fresh install
-You can write a fresh firmware image for updating. Either using the [Breezedude Web Installer](https://install.breezedude.de/) or Building & Uploading with PIO. This may be required if the integrated web updater fails updating.
-
-## 🛠 Build from source using VSCode & PIO
-
-Requirements: 
-- VSCode with PIO installed
-- NodeJs (for minifying HTML, optional)
-
-Steps:
-- Clone/Download this repo and open it in VSCode with PlatformIO installed
-- PIO will setup everything required. 
-- (optional) edit `src/config.h` to set your default values.
-- In PIO Project Tasks open `heltec_wifi_lora_32_V3` -> `General` and click `Upload`.
-- It is required to upload the SPIFFS/LittleFS image as well. For this click `Upload Filesystem Image` under `Platform` in PIO Poject Tasks.   
-
-> [!NOTE]
-> If you want to skip rebundeling HTML+JS comment `pre:minify.py` in extra scripts with a semicolon   
-> `pre:install_deps.py` will run `npm i` in `/bundle` for minifying HTML+JS
-
-> [!NOTE]
-> The script `post:copy_firmware.py` will run automatically on build and generate and copy the files for web-update to the project root.    
-> The custom Task `Build & Bundle all` will generate the all-in-one.bin for webflashing (saved to the project root).
+Non-commercial use, CC BY-NC 4.0 - see [LICENSE.txt](LICENSE.txt).
 
 -----
 

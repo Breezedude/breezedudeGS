@@ -1,0 +1,27 @@
+idf_component_register(
+    SRCS
+        "WString.cpp"
+        "Print.cpp"
+        "arduino_core.cpp"
+        "HardwareSerial.cpp"
+        "TcpClient.cpp"
+        "Preferences.cpp"
+        "TimeLib.cpp"
+        "WiFiFacade.cpp"
+        "HTTPClient.cpp"
+    INCLUDE_DIRS "include"
+    REQUIRES
+        driver
+        esp_adc
+        esp_driver_gpio
+        esp_driver_uart
+        esp_driver_usb_serial_jtag
+        esp_hw_support
+        esp_http_client
+        esp_netif
+        esp_timer
+        esp_wifi
+        esp-tls
+        lwip
+        nvs_flash
+)

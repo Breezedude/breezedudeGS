@@ -1,0 +1,122 @@
+# ---------------------------------------------------------------------------
+# Breezedude GS - common defaults (both targets)
+# ---------------------------------------------------------------------------
+
+# --- partition layout / flash ---------------------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_4mb.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# --- application version ---------------------------------------------------
+CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+CONFIG_APP_PROJECT_VER="0.7.0"
+
+# --- build ------------------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
+CONFIG_COMPILER_STACK_CHECK_MODE_NORM=y
+
+# --- OTA: keep a rollback safety net --------------------------------------
+# The app marks itself valid once WiFi/radio came up, otherwise the bootloader
+# falls back to the previous slot after a reboot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# --- power management: automatic light sleep -------------------------------
+# The whole point of the task rewrite: every task blocks on a queue or a
+# notification, so the idle task can drop the CPU into light sleep between
+# LoRa interrupts and WiFi beacons.
+CONFIG_PM_ENABLE=y
+CONFIG_PM_SLP_IRAM_OPT=y
+CONFIG_PM_RTOS_IDLE_OPT=y
+# Note on CONFIG_PM_SLP_DISABLE_GPIO: it isolates every GPIO during automatic
+# light sleep and cannot be turned off here, because ESP_WIFI_SLP_IRAM_OPT below
+# selects it. The transceiver's control lines would float on every sleep cycle,
+# so bd_radio.cpp excludes them with gpio_sleep_sel_dis() at start-up.
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP=3
+CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP=y
+CONFIG_ESP_PHY_MAC_BB_PD=y
+# Flash power-down in light sleep is board dependent (VDD_SDIO regulator) and
+# has bricked boards that power the flash externally - left off deliberately.
+CONFIG_ESP_SLEEP_POWER_DOWN_FLASH=n
+
+# --- GPIO control from ISRs while the flash cache is off --------------------
+# RadioLib installs the GPIO ISR service with ESP_INTR_FLAG_IRAM, so the DIO1
+# interrupt also runs while flash is being erased or written (OTA, NVS,
+# LittleFS). Its handler masks the level-triggered line with
+# gpio_intr_disable(); that function must then live in IRAM, otherwise a
+# packet arriving during a flash write crashes the station.
+CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
+
+# --- WiFi: modem sleep friendly -------------------------------------------
+CONFIG_ESP_WIFI_SLP_IRAM_OPT=y
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=y
+CONFIG_ESP_WIFI_SLP_DEFAULT_MIN_ACTIVE_TIME=8
+CONFIG_ESP_WIFI_SLP_DEFAULT_MAX_ACTIVE_TIME=10
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=24
+CONFIG_ESP_WIFI_TX_BUFFER_TYPE=1
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=24
+
+# --- no Bluetooth ----------------------------------------------------------
+CONFIG_BT_ENABLED=n
+
+# --- HTTP server (web UI + websocket) -------------------------------------
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+CONFIG_HTTPD_PURGE_BUF_LEN=32
+
+# --- lwIP ------------------------------------------------------------------
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_SO_RCVBUF=y
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
+CONFIG_LWIP_TCP_WND_DEFAULT=5760
+
+# --- HTTP client / TLS for self-update ------------------------------------
+# The update backend serves plain HTTP. esp_https_ota refuses that unless this
+# is set - without it the self-update never starts (found in the rollout test).
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=n
+
+# --- console: UART0, log output is mirrored to USB-Serial-JTAG at runtime --
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# --- bootloader -------------------------------------------------------------
+# Quiet unless something is wrong: the partition table dump on every boot only
+# slows the start and clutters the console the web installer reads.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# --- logging ----------------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+CONFIG_LOG_COLORS=n
+
+# --- core dump into its own partition --------------------------------------
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+
+# --- tasks / watchdog -------------------------------------------------------
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_FREERTOS_HZ=1000
+
+# --- filesystem -------------------------------------------------------------
+CONFIG_LITTLEFS_MAX_PARTITIONS=1
+CONFIG_LITTLEFS_PAGE_SIZE=256
+
+# Hold light sleep off only while a USB host has the console open, so flashing
+# and serial debugging work while the field unit still sleeps.
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
+
+# HTTPS for the diagnostic reports: TLS buffers only while a connection needs them.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+# CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is not set
