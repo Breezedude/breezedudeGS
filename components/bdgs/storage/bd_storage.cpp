@@ -2,6 +2,7 @@
 
 #include <sys/stat.h>
 
+#include "freertos/FreeRTOS.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "esp_partition.h"
@@ -10,6 +11,22 @@
 static const char* TAG = "storage";
 static bool s_mounted = false;
 static uint32_t s_image_crc = 0;
+static portMUX_TYPE s_writer_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_writer_busy = false;
+
+bool bd_storage_claim_writer(void) {
+  portENTER_CRITICAL(&s_writer_mux);
+  const bool claimed = !s_writer_busy;
+  s_writer_busy = true;
+  portEXIT_CRITICAL(&s_writer_mux);
+  return claimed;
+}
+
+void bd_storage_release_writer(void) {
+  portENTER_CRITICAL(&s_writer_mux);
+  s_writer_busy = false;
+  portEXIT_CRITICAL(&s_writer_mux);
+}
 
 // Every change of the web UI (update, upload, format) remounts the partition,
 // so a checksum taken at mount time identifies the installed UI.

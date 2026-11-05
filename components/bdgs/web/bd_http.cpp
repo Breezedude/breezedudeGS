@@ -238,6 +238,7 @@ struct UploadState {
   size_t written = 0;
   int last_percent = -5;
   bool failed = false;
+  bool writer_claimed = false;  // holds the www partition (bd_storage_claim_writer)
   String message;
 };
 
@@ -256,6 +257,11 @@ static bool upload_begin(UploadState* state, const String& filename, size_t tota
                        (unsigned)state->partition->size + ")";
       return false;
     }
+    if (!bd_storage_claim_writer()) {
+      state->message = "the station is downloading its web UI right now - try again in a minute";
+      return false;
+    }
+    state->writer_claimed = true;
     bd_storage_unmount();
     if (esp_partition_erase_range(state->partition, 0, state->partition->size) != ESP_OK) {
       state->message = "erasing the www partition failed";
@@ -499,13 +505,17 @@ static esp_err_t update_handler(httpd_req_t* req) {
   }
 
   bool ok = !state.failed && state.written > 0 && upload_finish(&state);
+  if (state.writer_claimed && ok) bd_storage_release_writer();
 
   if (!ok) {
     otaUploadRejected = true;
     if (state.message.isEmpty()) state.message = "upload failed";
     webconsole_print("update failed: " + state.message);
     bd_ws_broadcast(String("{\"otaStatus\":\"Update failed: ") + state.message + "\"}");
-    if (state.target == UploadTarget::WebUi) bd_storage_mount();
+    if (state.writer_claimed) {
+      bd_storage_mount();
+      bd_storage_release_writer();
+    }
     if (state.target == UploadTarget::Firmware && state.ota) esp_ota_abort(state.ota);
     otaUploadInProgress = false;
     bd_net_bulk_transfer(false);

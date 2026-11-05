@@ -247,10 +247,18 @@ static bool download_web_image(const String& url) {
     return false;
   }
 
+  if (!bd_storage_claim_writer()) {
+    // A browser is uploading a web UI; that one wins, and if it is not the
+    // right version the next check fetches it again.
+    webconsole_print("Web UI is being uploaded - download skipped");
+    http.end();
+    return false;
+  }
   bd_storage_unmount();
   if (esp_partition_erase_range(part, 0, part->size) != ESP_OK) {
     http.end();
     bd_storage_mount();
+    bd_storage_release_writer();
     return false;
   }
 
@@ -277,6 +285,7 @@ static bool download_web_image(const String& url) {
   bool ok = written == (size_t)size;
   webconsole_print(ok ? "Web UI image updated" : "Web UI image update incomplete");
   bd_storage_mount();
+  bd_storage_release_writer();
   return ok;
 }
 

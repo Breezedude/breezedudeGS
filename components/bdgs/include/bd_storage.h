@@ -27,6 +27,12 @@ bool bd_storage_info(size_t* total_bytes, size_t* used_bytes);
 size_t bd_storage_partition_size(void);
 bool bd_storage_format(void);
 
+// Only one writer may replace the web UI at a time: a browser upload and the
+// station's own download after a firmware update would otherwise interleave
+// their blocks. claim returns false while the other one is busy.
+bool bd_storage_claim_writer(void);
+void bd_storage_release_writer(void);
+
 // Checksum of the partition as mounted; changes with every new web UI.
 uint32_t bd_storage_image_crc(void);
 
