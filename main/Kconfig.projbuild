@@ -77,6 +77,9 @@ menu "Breezedude GS board"
         default 37 if IDF_TARGET_ESP32S3
         default 1 if IDF_TARGET_ESP32C6
         default 37
+        help
+            Active low on some Heltec V3 boards, active high on others; the
+            firmware finds the level on its first battery measurement.
 
     config BDGS_PIN_ADC_BATTERY
         int "Battery sense ADC1 pin (-1 = no battery sensing)"

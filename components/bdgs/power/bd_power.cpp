@@ -58,30 +58,55 @@ void configureTimeZoneFromLocation() {
 }
 
 // --- battery ----------------------------------------------------------------
-static float read_battery() {
-  if (!settings.batteryPowered || BD_PIN_ADC_BATTERY < 0) {
-    if (BD_PIN_ADC_CTRL >= 0) digitalWrite(BD_PIN_ADC_CTRL, 0);
-    s_filtered_voltage = NAN;
-    s_measurement_settled = false;
-    return NAN;
-  }
+// The divider enable differs between Heltec boards: the Wireless Stick Lite V3
+// and early WiFi LoRa 32 V3 switch it with a P-MOSFET (low = on), later
+// revisions with an extra transistor (high = on). With the divider off the ADC
+// reads about 0 V, so the level that gives a plausible voltage is the right one;
+// it is found on the first measurement and kept (-1 = not known yet).
+static int s_adc_ctrl_on = -1;
 
+static bool plausible_battery(float volts) { return volts >= 2.0f && volts <= 5.5f; }
+
+static float measure_battery(int ctrlOn) {
   if (BD_PIN_ADC_CTRL >= 0) {
-    digitalWrite(BD_PIN_ADC_CTRL, 1);
+    digitalWrite(BD_PIN_ADC_CTRL, ctrlOn);
     delay(4);
   }
-
   uint32_t millivoltsSum = 0;
   for (uint8_t i = 0; i < BATTERY_ADC_SAMPLES; i++) {
     millivoltsSum += analogReadMilliVolts(BD_PIN_ADC_BATTERY);
     delay(2);
   }
-
-  if (BD_PIN_ADC_CTRL >= 0) digitalWrite(BD_PIN_ADC_CTRL, 0);
-
+  if (BD_PIN_ADC_CTRL >= 0) digitalWrite(BD_PIN_ADC_CTRL, !ctrlOn);
   float averageMillivolts = (float)millivoltsSum / (float)BATTERY_ADC_SAMPLES;
-  float measuredVoltage = (averageMillivolts / 1000.0f) * BATTERY_DIVIDER_RATIO;
-  if (measuredVoltage < 2.0f || measuredVoltage > 5.5f) {
+  return (averageMillivolts / 1000.0f) * BATTERY_DIVIDER_RATIO;
+}
+
+static float read_battery() {
+  if (!settings.batteryPowered || BD_PIN_ADC_BATTERY < 0) {
+    if (BD_PIN_ADC_CTRL >= 0 && s_adc_ctrl_on >= 0) digitalWrite(BD_PIN_ADC_CTRL, !s_adc_ctrl_on);
+    s_filtered_voltage = NAN;
+    s_measurement_settled = false;
+    return NAN;
+  }
+
+  float measuredVoltage = measure_battery(s_adc_ctrl_on >= 0 ? s_adc_ctrl_on : 1);
+  if (!plausible_battery(measuredVoltage) && BD_PIN_ADC_CTRL >= 0) {
+    // Unknown polarity, or the known one stopped working: try the other level.
+    int other = (s_adc_ctrl_on >= 0) ? !s_adc_ctrl_on : 0;
+    float otherVoltage = measure_battery(other);
+    if (plausible_battery(otherVoltage)) {
+      if (s_adc_ctrl_on != other) {
+        ESP_LOGI(TAG, "battery divider is enabled by a %s level", other ? "high" : "low");
+      }
+      s_adc_ctrl_on = other;
+      measuredVoltage = otherVoltage;
+    }
+  } else if (s_adc_ctrl_on < 0 && BD_PIN_ADC_CTRL >= 0) {
+    s_adc_ctrl_on = 1;
+    ESP_LOGI(TAG, "battery divider is enabled by a high level");
+  }
+  if (!plausible_battery(measuredVoltage)) {
     return NAN;
   }
 
