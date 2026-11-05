@@ -1,5 +1,6 @@
 #include "bd_power.h"
 
+#include <string.h>
 #include <time.h>
 
 #include "bd_board.h"
@@ -19,14 +20,18 @@
 
 static const char* TAG = "power";
 
-static constexpr uint8_t BATTERY_ADC_SAMPLES = 12;
+static constexpr uint8_t BATTERY_ADC_SAMPLES = 24;
+static constexpr uint8_t BATTERY_ADC_TRIM = 4;      // lowest and highest samples dropped
+static constexpr uint8_t BATTERY_MEDIAN_WINDOW = 5;  // measurements, 75 s
 static constexpr uint32_t BATTERY_MEASUREMENT_INTERVAL_MS = 15000UL;
-static constexpr float BATTERY_LOW_PASS_ALPHA = 0.18f;
+static constexpr float BATTERY_LOW_PASS_ALPHA = 0.25f;
 static constexpr float BATTERY_DIVIDER_RATIO = CONFIG_BDGS_BATTERY_DIVIDER_RATIO_MILLI / 1000.0f;
 static constexpr float BATTERY_UNDERVOLTAGE_THRESHOLD = 3.1f;                 // Volt
 static constexpr uint64_t LOW_BATTERY_SLEEP_SECONDS = 12ULL * 60ULL * 60ULL;  // 12 hours
 
 static float s_filtered_voltage = NAN;
+static float s_recent_voltages[BATTERY_MEDIAN_WINDOW];
+static uint8_t s_recent_count = 0;  // valid entries, oldest first
 static uint32_t s_last_measurement_ms = 0;
 static bool s_measurement_settled = false;
 static uint32_t s_last_sleep_check_ms = 0;
@@ -67,19 +72,59 @@ static int s_adc_ctrl_on = -1;
 
 static bool plausible_battery(float volts) { return volts >= 2.0f && volts <= 5.5f; }
 
+// Insertion sort: the arrays here hold at most 24 values.
+template <typename T>
+static void sort_small(T* values, size_t count) {
+  for (size_t i = 1; i < count; i++) {
+    T value = values[i];
+    size_t j = i;
+    while (j > 0 && values[j - 1] > value) {
+      values[j] = values[j - 1];
+      j--;
+    }
+    values[j] = value;
+  }
+}
+
+// One measurement: sorted samples, the extremes dropped, the rest averaged.
+// The station is held out of light sleep meanwhile - between the samples the
+// CPU would otherwise sleep, and readings taken across a light sleep come out
+// several hundred millivolts low.
 static float measure_battery(int ctrlOn) {
+  bd_power_hold_awake(true);
   if (BD_PIN_ADC_CTRL >= 0) {
     digitalWrite(BD_PIN_ADC_CTRL, ctrlOn);
     delay(4);
   }
-  uint32_t millivoltsSum = 0;
+  uint16_t samples[BATTERY_ADC_SAMPLES];
   for (uint8_t i = 0; i < BATTERY_ADC_SAMPLES; i++) {
-    millivoltsSum += analogReadMilliVolts(BD_PIN_ADC_BATTERY);
-    delay(2);
+    samples[i] = (uint16_t)analogReadMilliVolts(BD_PIN_ADC_BATTERY);
+    delay(1);
   }
   if (BD_PIN_ADC_CTRL >= 0) digitalWrite(BD_PIN_ADC_CTRL, !ctrlOn);
-  float averageMillivolts = (float)millivoltsSum / (float)BATTERY_ADC_SAMPLES;
+  bd_power_hold_awake(false);
+
+  sort_small(samples, BATTERY_ADC_SAMPLES);
+  uint32_t millivoltsSum = 0;
+  for (uint8_t i = BATTERY_ADC_TRIM; i < BATTERY_ADC_SAMPLES - BATTERY_ADC_TRIM; i++) {
+    millivoltsSum += samples[i];
+  }
+  float averageMillivolts = (float)millivoltsSum / (float)(BATTERY_ADC_SAMPLES - 2 * BATTERY_ADC_TRIM);
   return (averageMillivolts / 1000.0f) * BATTERY_DIVIDER_RATIO;
+}
+
+// Median of the last measurements: a single outlier never reaches the
+// displayed or transmitted value.
+static float recent_median(float latest) {
+  if (s_recent_count == BATTERY_MEDIAN_WINDOW) {
+    memmove(s_recent_voltages, s_recent_voltages + 1, sizeof(float) * (BATTERY_MEDIAN_WINDOW - 1));
+    s_recent_count--;
+  }
+  s_recent_voltages[s_recent_count++] = latest;
+  float sorted[BATTERY_MEDIAN_WINDOW];
+  memcpy(sorted, s_recent_voltages, sizeof(float) * s_recent_count);
+  sort_small(sorted, s_recent_count);
+  return sorted[s_recent_count / 2];
 }
 
 static float read_battery() {
@@ -111,10 +156,11 @@ static float read_battery() {
   }
 
   if (!s_measurement_settled || isnan(s_filtered_voltage)) {
-    s_filtered_voltage = measuredVoltage;
+    s_recent_count = 0;
+    s_filtered_voltage = recent_median(measuredVoltage);
     s_measurement_settled = true;
   } else {
-    s_filtered_voltage += BATTERY_LOW_PASS_ALPHA * (measuredVoltage - s_filtered_voltage);
+    s_filtered_voltage += BATTERY_LOW_PASS_ALPHA * (recent_median(measuredVoltage) - s_filtered_voltage);
   }
 
   aprs.setBattVoltage(s_filtered_voltage);
