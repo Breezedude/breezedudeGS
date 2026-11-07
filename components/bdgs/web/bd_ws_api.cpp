@@ -9,6 +9,7 @@
 #include "bd_fwstore.h"
 #include "bd_fwupdate.h"
 #include "bd_net.h"
+#include "bd_night.h"
 #include "bd_power.h"
 #include "bd_radio.h"
 #include "bd_repeat.h"
@@ -295,6 +296,15 @@ size_t bd_ws_status_json(char* out, size_t cap) {
   resp["heapMin"] = (uint32_t)esp_get_minimum_free_heap_size();
   resp["heapBlock"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
   resp["sleep"] = bd_power_state_text();
+  if (settings.nightSaving) {
+    time_t sunset, sunrise;
+    bd_night_window(&sunset, &sunrise);
+    JsonObject night = resp["night"].to<JsonObject>();
+    night["active"] = bd_night_active();
+    night["sunset"] = (uint32_t)sunset;
+    night["sunrise"] = (uint32_t)sunrise;
+    night["stations"] = bd_night_synced_stations();
+  }
 
   const BdWsOutStats wsOut = bd_ws_out_stats();
   JsonObject ws = resp["ws"].to<JsonObject>();
@@ -344,7 +354,7 @@ size_t bd_ws_status_json(char* out, size_t cap) {
   radio["fanetRx"] = fanet_rx_count;
   if (settings.receiveFlarm) {
     JsonObject flarm = radio["flarm"].to<JsonObject>();
-    flarm["state"] = flarm_enabled() ? "on" : "no position";
+    flarm["state"] = flarm_enabled() ? "on" : bd_night_active() ? "night" : "no position";
     flarm["decoded"] = flarm_decoded;
     flarm["frames"] = flarm_rx_frames;
     flarm["crcFail"] = flarm_crc_errors;
@@ -352,7 +362,7 @@ size_t bd_ws_status_json(char* out, size_t cap) {
   }
   if (settings.receiveAdsl) {
     JsonObject adsl = radio["adsl"].to<JsonObject>();
-    adsl["state"] = adsl_enabled() ? "on" : "off";
+    adsl["state"] = adsl_enabled() ? "on" : bd_night_active() ? "night" : "off";
     adsl["decoded"] = adsl_decoded;
     adsl["frames"] = adsl_rx_frames;
     adsl["crcFail"] = adsl_crc_errors;
@@ -537,6 +547,7 @@ void bd_ws_handle_command(int fd, const char* data, size_t len) {
     resp["sleepScheduleEnabled"] = settings.sleepScheduleEnabled;
     resp["sleepOffTime"] = formatMinutesAsTime(settings.sleepOffMinutes);
     resp["sleepOnTime"] = formatMinutesAsTime(settings.sleepOnMinutes);
+    resp["nightSaving"] = settings.nightSaving;
     resp["sendAPRS"] = settings.sendAPRS;
     resp["aprsServer"] = settings.aprsServer;
     resp["aprsPort"] = settings.aprsPort;
@@ -669,6 +680,7 @@ void bd_ws_handle_command(int fd, const char* data, size_t len) {
         settings.batteryPowered && doc["sleepScheduleEnabled"].as<bool>();
     settings.sleepOffMinutes = parseTimeToMinutes(doc["sleepOffTime"], settings.sleepOffMinutes);
     settings.sleepOnMinutes = parseTimeToMinutes(doc["sleepOnTime"], settings.sleepOnMinutes);
+    settings.nightSaving = doc["nightSaving"].as<bool>();
 
     bool requiredSetupComplete =
         hasRequiredSetupValues(settings.deviceName, settings.latitude, settings.longitude);

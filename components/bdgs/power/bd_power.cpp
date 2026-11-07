@@ -6,6 +6,7 @@
 #include "bd_board.h"
 #include "bd_console.h"
 #include "bd_net.h"
+#include "bd_night.h"
 #include "bd_state.h"
 #include "bd_stats.h"
 #include "esp_log.h"
@@ -316,6 +317,9 @@ String bd_power_state_text() {
   // lock and would otherwise be reported as a transfer.
   if (s_boot_hold_active) return "awake (boot grace period)";
   if (s_hold_count > 0) return "awake (transfer in progress)";
+  if (bd_night_active()) {
+    return String("night mode: radio wakes for ") + bd_night_synced_stations() + " weather stations";
+  }
   if (flarm_enabled() || adsl_enabled()) return "light sleep between FSK windows";
   return "light sleep until next packet";
 #else

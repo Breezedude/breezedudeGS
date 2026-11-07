@@ -1,0 +1,552 @@
+// Copied from breezedude_WindSensor src/fanet_sched.cpp (34356c9), where it
+// plans the receive windows of the scheduled repeater. The ground station uses
+// it for the night mode (radio/bd_night.cpp). Changes for the ground station
+// are marked "GS:"; keep the rest in step with the sensor's copy.
+#include "fanet_sched.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#ifdef ESP_PLATFORM
+#include "esp_log.h"
+// GS: the sensor's log_i() lines end in CRLF, the IDF log adds its own.
+static void log_i(const char *msg) {
+  char line[160];
+  snprintf(line, sizeof(line), "%s", msg);
+  size_t n = strlen(line);
+  while (n && (line[n - 1] == 10 || line[n - 1] == 13)) line[--n] = 0;  // LF, CR
+  ESP_LOGI("sched", "%s", line);
+}
+#else
+#include "logging.h"
+#endif
+
+// The window opens this long before the packet is expected. Only the repeater's
+// own timing has to fit in here, so it stays small; it follows the prediction
+// error and doubles after an empty window.
+#define SCHED_GUARD_MIN_MS  250u   // t_rx is the end of a packet: covers its airtime, the wakeup and the radio start
+#define SCHED_GUARD_MAX_MS  2000u
+#define SCHED_GUARD_START_MS 500u
+// Anything outside this is not a broadcast interval and is not learned.
+#define SCHED_PERIOD_MIN_MS 5000u
+#define SCHED_PERIOD_MAX_MS 600000u
+// Empty windows in a row before the receiver stays on to find the sender again.
+#define SCHED_MISS_LIMIT    2u
+// How long that lasts before the station is given up and its slot freed.
+#define SCHED_RESYNC_PERIODS 3u
+// A station heard once but never again is forgotten after this.
+#define SCHED_LEARN_TIMEOUT_MS 900000u
+// A sender may skip this many periods and still be recognised by its rhythm.
+#define SCHED_SKIP_MAX      4u
+// Within this, a packet's deviation from its due time is clock drift: it trims
+// the period and the phase. Beyond it, lateness is a delay at the sender.
+#define SCHED_TRIM_MS       300
+// HWInfo is sent every ten minutes (ota_lora.cpp), so its rhythm is learned
+// within these bounds. Two empty windows drop it - see sched_note_hwinfo().
+#define SCHED_HW_PERIOD_MIN_MS 15000u
+#define SCHED_HW_PERIOD_MAX_MS 3600000u
+#define SCHED_HW_MISS_LIMIT 2u
+// The HWInfo window starts out wide enough for an assumed interval, so it needs
+// more room than a weather window ever does.
+#define SCHED_HW_GUARD_MAX_MS 16000u
+
+struct Station {
+  uint32_t id;
+  uint32_t period;
+  uint32_t last_rx;
+  uint32_t next;
+  uint32_t guard;
+  uint32_t err_avg;    // running average of how early a packet arrived, ms
+  uint32_t deadline;   // learn timeout, or when to give up resyncing
+  uint16_t hits;
+  uint8_t  misses;
+  uint8_t  state;
+  uint8_t  skip_k;     // how many periods the last gap spanned, to spot a changed interval
+  int32_t  last_late;  // ms the last packet in its window came after its due time
+  bool     verify;     // listening through one whole gap to measure the interval
+  // The HWInfo rhythm of the same station, followed separately.
+  uint32_t hw_period;
+  uint32_t hw_last;
+  uint32_t hw_next;
+  uint32_t hw_guard;
+  uint32_t hw_err_avg;
+  uint16_t hw_hits;
+  uint8_t  hw_misses;
+  uint8_t  hw_state;
+};
+
+static Station tab[SCHED_MAX_STATIONS];
+static uint32_t scan_interval_ms = 3600000u;
+static uint32_t scan_duration_ms = SCHED_SCAN_DEFAULT_MS;
+static uint32_t scan_next = 0;     // due right after boot, so a fresh station learns at once
+static uint32_t scan_until = 0;
+static bool scanning = false;
+static bool dropped = false;       // a station made room for another since the last report
+
+// time() is a 32 bit millisecond counter and wraps after 49.7 days, so every
+// comparison is made on the difference.
+static inline bool reached(uint32_t now, uint32_t t) { return (int32_t)(now - t) >= 0; }
+
+static inline uint32_t clamp_guard(uint32_t g) {
+  if (g < SCHED_GUARD_MIN_MS) return SCHED_GUARD_MIN_MS;
+  if (g > SCHED_GUARD_MAX_MS) return SCHED_GUARD_MAX_MS;
+  return g;
+}
+
+static inline bool plausible(uint32_t gap) {
+  return gap >= SCHED_PERIOD_MIN_MS && gap <= SCHED_PERIOD_MAX_MS;
+}
+
+static inline bool hw_plausible(uint32_t gap) {
+  return gap >= SCHED_HW_PERIOD_MIN_MS && gap <= SCHED_HW_PERIOD_MAX_MS;
+}
+
+static inline uint32_t clamp_hw_guard(uint32_t g) {
+  if (g < SCHED_GUARD_MIN_MS) return SCHED_GUARD_MIN_MS;
+  if (g > SCHED_HW_GUARD_MAX_MS) return SCHED_HW_GUARD_MAX_MS;
+  return g;
+}
+
+// Does a measured gap still belong to the expected rhythm? Asymmetric, for the
+// same reason the window is: a sender that was held back by its cooldown comes
+// late, so a gap may exceed the expectation by the tail. Coming early means the
+// interval really did change - the battery scale factor does that - and then
+// the period is learned again. The early side keeps 5 %, at least 1 s, for the
+// jitter of two clocks measuring each other.
+static bool matches(uint32_t gap, uint32_t expected) {
+  const uint32_t tol = (expected / 20u) > 1000u ? (expected / 20u) : 1000u;
+  if (gap + tol < expected) return false;
+  return gap <= expected + SCHED_TAIL_MS;
+}
+
+static uint32_t window_open(const Station *s)  { return s->next - s->guard; }
+static uint32_t window_close(const Station *s) { return s->next + SCHED_TAIL_MS; }
+static uint32_t hw_window_open(const Station *s)  { return s->hw_next - s->hw_guard; }
+// A window this wide is an assumed period, not a late sender: the clock offset
+// that opens it early can just as well make the packet late.
+static uint32_t hw_window_close(const Station *s) {
+  return s->hw_next + (s->hw_guard > SCHED_TAIL_MS ? s->hw_guard : SCHED_TAIL_MS);
+}
+
+static void say(const char *what, const Station *s) {
+  char line[96];
+  snprintf(line, sizeof(line), "SCHED %s 0x%06lX T=%lums g=%lums hit=%u miss=%u\r\n",
+           what, (unsigned long)s->id, (unsigned long)s->period, (unsigned long)s->guard,
+           (unsigned)s->hits, (unsigned)s->misses);
+  log_i(line);
+}
+
+static void say_hw(const char *what, const Station *s) {
+  char line[96];
+  snprintf(line, sizeof(line), "SCHED hw %s 0x%06lX T=%lums g=%lums hit=%u miss=%u\r\n",
+           what, (unsigned long)s->id, (unsigned long)s->hw_period, (unsigned long)s->hw_guard,
+           (unsigned)s->hw_hits, (unsigned)s->hw_misses);
+  log_i(line);
+}
+
+static Station *find(uint32_t id) {
+  for (uint8_t i = 0; i < SCHED_MAX_STATIONS; i++) {
+    if (tab[i].state != SCHED_FREE && tab[i].id == id) return &tab[i];
+  }
+  return nullptr;
+}
+
+// A free slot, or the station that has been silent longest - a sender that
+// stopped should not keep a newcomer out.
+static Station *slot_for(void) {
+  Station *worst = nullptr;
+  for (uint8_t i = 0; i < SCHED_MAX_STATIONS; i++) {
+    if (tab[i].state == SCHED_FREE) return &tab[i];
+    if (!worst || (int32_t)(tab[i].last_rx - worst->last_rx) < 0) worst = &tab[i];
+  }
+  if (worst) { say("drops", worst); dropped = true; }
+  return worst;
+}
+
+bool sched_dropped_take(void) {
+  const bool was = dropped;
+  dropped = false;
+  return was;
+}
+
+static void forget(Station *s) {
+  say("gone", s);
+  memset(s, 0, sizeof(*s));
+}
+
+static void tick(uint32_t now) {
+  for (uint8_t i = 0; i < SCHED_MAX_STATIONS; i++) {
+    Station *s = &tab[i];
+    if (s->state == SCHED_SYNCED) {
+      uint8_t steps = 0;
+      while (reached(now, window_close(s))) {
+        s->misses++;
+        s->next += s->period;
+        s->guard = clamp_guard(s->guard * 2u);
+        // Two empty windows, or a jump in time that skipped several, mean the
+        // prediction is no longer worth anything.
+        if (s->misses >= SCHED_MISS_LIMIT || ++steps > SCHED_SKIP_MAX) {
+          s->state = SCHED_RESYNC;
+          s->deadline = now + SCHED_RESYNC_PERIODS * s->period;
+          say("resync", s);
+          break;
+        }
+      }
+    } else if (s->state != SCHED_FREE && reached(now, s->deadline)) {
+      forget(s);
+      continue;
+    }
+
+    // The HWInfo rhythm of a station is dropped rather than resynced: it comes
+    // every ten minutes, and listening that long to find it again would cost
+    // more than the packet is worth. The next scan window picks it up.
+    if (s->hw_state == SCHED_CHECK || s->hw_state == SCHED_SYNCED) {
+      uint8_t steps = 0;
+      while (reached(now, hw_window_close(s))) {
+        s->hw_misses++;
+        s->hw_next += s->hw_period;
+        s->hw_guard = clamp_hw_guard(s->hw_guard * 2u);
+        if (s->hw_misses >= SCHED_HW_MISS_LIMIT || ++steps > SCHED_SKIP_MAX) {
+          s->hw_state = SCHED_FREE;
+          say_hw("lost", s);
+          break;
+        }
+      }
+    }
+  }
+
+  if (!scan_duration_ms) return;
+  if (scanning && reached(now, scan_until)) {
+    scanning = false;
+    log_i("SCHED scan done\r\n");
+  }
+  if (!scanning && reached(now, scan_next)) {
+    scanning = true;
+    scan_until = now + scan_duration_ms;
+    scan_next = now + scan_interval_ms;   // the interval counts from one scan to the next
+    log_i("SCHED scan start\r\n");
+    sched_log_status(now);
+  }
+}
+
+void sched_configure(uint32_t interval_ms, uint32_t duration_ms) {
+  scan_interval_ms = interval_ms ? interval_ms : 3600000u;
+  scan_duration_ms = duration_ms;
+}
+
+void sched_reset(void) {
+  memset(tab, 0, sizeof(tab));
+  scanning = false;
+  scan_next = 0;
+  scan_until = 0;
+}
+
+void sched_note_weather(uint32_t id, uint32_t t_rx) {
+  tick(t_rx);
+
+  Station *s = find(id);
+  // GS: a repeater passes the packet on a moment later, and the ground station
+  // hears both copies. Only the first one belongs to the sender's rhythm - the
+  // copy would otherwise move the prediction by the repeater's delay.
+  if (s && t_rx - s->last_rx < SCHED_PERIOD_MIN_MS) return;
+  if (!s) {
+    s = slot_for();
+    if (!s) return;
+    memset(s, 0, sizeof(*s));
+    s->id = id;
+    s->state = SCHED_LEARN;
+    s->guard = SCHED_GUARD_START_MS;
+    s->last_rx = t_rx;
+    s->hits = 1;
+    s->deadline = t_rx + SCHED_LEARN_TIMEOUT_MS;
+    say("new", s);
+    return;
+  }
+
+  const uint32_t gap = t_rx - s->last_rx;
+  s->last_rx = t_rx;
+  s->hits++;
+  s->deadline = t_rx + SCHED_LEARN_TIMEOUT_MS;
+
+  if (s->state == SCHED_LEARN) {
+    if (plausible(gap)) {
+      s->period = gap;
+      s->state = SCHED_CHECK;
+    }
+  } else if (s->state == SCHED_CHECK) {
+    if (matches(gap, s->period)) {
+      // Take the shorter of the two: a gap stretched by the cooldown is longer
+      // than the interval, never shorter, so the smaller measurement is the one
+      // closer to the truth.
+      if (gap < s->period) { s->period = gap; }
+      s->state = SCHED_SYNCED;
+      s->misses = 0;
+      s->err_avg = 0;
+      s->guard = SCHED_GUARD_START_MS;
+      say("synced", s);
+    } else if (plausible(gap)) {
+      s->period = gap;   // the first measurement was an outlier, start from this one
+    }
+  } else {
+    // Synced or resyncing: does the gap fit the rhythm, with skipped periods
+    // allowed? If it does not, the sender changed its interval and the period
+    // is learned again.
+    const uint32_t k = s->period ? (gap + s->period / 2u) / s->period : 0u;
+    // The moment this packet was due, if it came in the window that was open
+    // for it - tick() above has moved next past any window that went by empty.
+    const bool in_window = s->state == SCHED_SYNCED &&
+                           reached(t_rx, window_open(s)) && !reached(t_rx, window_close(s));
+    const uint32_t due = s->next;
+    // A packet inside the window that was open for it fits, whatever the gap
+    // to the one before: after a delayed packet the next punctual one comes a
+    // gap that much shorter than the period, and taking that for a changed
+    // interval threw the learned rhythm away.
+    if ((in_window && k >= 1u && k <= SCHED_SKIP_MAX) ||
+        (k >= 1u && k <= SCHED_SKIP_MAX && matches(gap, k * s->period))) {
+      // Only earliness widens the guard. Lateness is covered by the tail, and
+      // feeding it in here would open the window earlier and earlier for a
+      // station that is merely waiting out its own cooldown.
+      const int32_t err = (int32_t)(s->next - t_rx);
+      const uint32_t early = err > 0 ? (uint32_t)err : 0u;
+      s->err_avg = (3u * s->err_avg + early) / 4u;
+      s->guard = clamp_guard(4u * s->err_avg + 50u);
+      // A gap of k periods proves nothing as long as the receiver was off for
+      // part of it: it is what a changed interval looks like, and just as much
+      // what windows look like that missed their packets. Two empty windows
+      // end in a resync, so the gap is then always three periods, whatever the
+      // sender does - and "the same k twice" took that for a new interval: a
+      // station sending every 40 s was followed at 120 s on the bench, two
+      // packets out of three not forwarded, until the next scan window put it
+      // right for a moment.
+      //
+      // So the interval is measured, not inferred: the receiver stays on for
+      // one whole gap, and that gap is what the sender does. A period later
+      // and the rhythm was right all along; k periods later and that is the
+      // new interval - scheduler.cpp multiplies it by three when the battery
+      // runs low. The cost is one gap of listening per suspicion.
+      if (s->verify) {
+        s->verify = false;
+        if (k >= 2u) {
+          s->period = gap;
+          s->err_avg = 0;
+          s->guard = SCHED_GUARD_START_MS;
+          s->state = SCHED_SYNCED;
+          s->misses = 0;
+          s->skip_k = 0;
+          say("interval", s);
+          s->next = t_rx + s->period;
+          return;
+        }
+      } else if (k >= 2u && (s->state == SCHED_RESYNC || s->skip_k == (uint8_t)k)) {
+        s->state = SCHED_RESYNC;
+        s->verify = true;
+        s->misses = 0;
+        s->skip_k = 0;
+        s->deadline = t_rx + (k + 1u) * s->period;
+        s->next = t_rx + s->period;
+        say("verify", s);
+        return;
+      }
+      if (s->state != SCHED_SYNCED) say("back", s);
+      s->state = SCHED_SYNCED;
+      s->misses = 0;
+      s->skip_k = (uint8_t)k;
+      // The sender keeps a fixed grid (tx_grid.cpp): a packet held back by
+      // listen-before-talk or the cooldown is late, but the next one is sent
+      // on time again. Moving the whole prediction by the lateness, as this
+      // did while senders had no grid, opened the next window that much too
+      // late: the punctual packet came before it, the window stayed empty,
+      // and two or three of those in a row made the gaps look like a longer
+      // interval - seen on BDF2BF as periods of 91, 121 and 213 s for a
+      // station sending every 30 or 40 s, and two thirds of its packets
+      // never forwarded.
+      //
+      // So a packet that is late by more than a little does not move the
+      // prediction at all. Small errors, either way, trim the period and move
+      // the phase by a quarter - that is two clocks drifting apart, and a
+      // quarter of under 300 ms stays inside the narrowest guard. An early
+      // packet is followed fully: no delay makes a packet early, only a clock
+      // or a period that is off. And a lateness that repeats - two packets in
+      // a row late by about the same - is not a delay but a sender whose grid
+      // moved, after a restart say; then the prediction moves with it.
+      if (in_window) {
+        const int32_t late = (int32_t)(t_rx - due);
+        const int32_t prev_late = s->last_late;
+        s->last_late = late;
+        if (late > -SCHED_TRIM_MS && late < SCHED_TRIM_MS) {
+          s->period = (uint32_t)((int32_t)s->period + late / 8);
+          if (late > 0) {
+            s->next = due + s->period + (uint32_t)late / 4u;
+            return;
+          }
+        } else if (late > 0) {
+          const int32_t diff = late - prev_late;
+          const bool repeats = prev_late >= SCHED_TRIM_MS && diff > -SCHED_TRIM_MS && diff < SCHED_TRIM_MS;
+          if (!repeats) {
+            s->next = due + s->period;
+            return;
+          }
+        }
+      } else {
+        s->last_late = 0;
+      }
+    } else if (plausible(gap)) {
+      s->period = gap;
+      s->state = SCHED_CHECK;
+      s->guard = SCHED_GUARD_START_MS;
+      s->misses = 0;
+      s->skip_k = 0;
+      s->verify = false;
+      say("relearn", s);
+    }
+  }
+  // Anything else - an early packet, one outside its window, a rhythm being
+  // learned or found again - anchors the prediction on the moment it arrived.
+  s->next = t_rx + s->period;
+}
+
+void sched_note_hwinfo(uint32_t id, uint32_t t_rx) {
+  tick(t_rx);
+
+  Station *s = find(id);
+  if (!s) return;   // only stations whose weather we already follow
+
+  const uint32_t gap = t_rx - s->hw_last;
+  const uint8_t was = s->hw_state;
+  s->hw_hits++;
+
+  if (was != SCHED_FREE) {
+    const uint32_t k = s->hw_period ? (gap + s->hw_period / 2u) / s->hw_period : 0u;
+    if (was == SCHED_CHECK && k >= 1u && k <= SCHED_SKIP_MAX && hw_plausible(gap / k) &&
+        reached(t_rx, hw_window_open(s)) && !reached(t_rx, hw_window_close(s))) {
+      // The second packet, and the first real measurement - over two periods
+      // if the one between was lost. It was taken with our own clock, so the
+      // offset between the two oscillators is inside the number - two per cent
+      // on the bench, twelve seconds over ten minutes - and the window can
+      // close down to the width the weather rhythm uses.
+      s->hw_last = t_rx;
+      s->hw_period = gap / k;
+      s->hw_err_avg = 0;
+      s->hw_guard = SCHED_GUARD_START_MS;
+      s->hw_state = SCHED_SYNCED;
+      s->hw_misses = 0;
+      s->hw_next = t_rx + s->hw_period;
+      say_hw("synced", s);
+      return;
+    }
+    if (was != SCHED_CHECK && k >= 1u && k <= SCHED_SKIP_MAX && matches(gap, k * s->hw_period)) {
+      s->hw_last = t_rx;
+      const int32_t err = (int32_t)(s->hw_next - t_rx);
+      const uint32_t early = err > 0 ? (uint32_t)err : 0u;
+      s->hw_err_avg = (3u * s->hw_err_avg + early) / 4u;
+      s->hw_guard = clamp_hw_guard(4u * s->hw_err_avg + 50u);
+      s->hw_state = SCHED_SYNCED;
+      s->hw_misses = 0;
+      s->hw_next = t_rx + s->hw_period;
+      return;
+    }
+    // Off the rhythm: ota_lora.cpp runs three timers, and the hourly ones put a
+    // packet between the ten minute ones. It is forwarded like any other, but
+    // it must not drag the prediction off the rhythm that holds, and neither
+    // may it count as the start of the next measurement.
+    return;
+  }
+  s->hw_last = t_rx;
+
+  // First HWInfo of this station. One packet says nothing about the interval,
+  // but the protocol does, so the ten minutes from ota_lora.cpp are taken on
+  // trust and the window opens wide. See fanet_sched.h for why this is not
+  // measured first like the weather rhythm.
+  s->hw_period = SCHED_HW_SEED_MS;
+  s->hw_state = SCHED_CHECK;
+  s->hw_guard = SCHED_HW_SEED_GUARD_MS;
+  s->hw_misses = 0;
+  s->hw_next = t_rx + SCHED_HW_SEED_MS;
+  say_hw("expect", s);
+}
+
+bool sched_rx_wanted(uint32_t now) {
+  tick(now);
+  if (scanning) return true;
+  for (uint8_t i = 0; i < SCHED_MAX_STATIONS; i++) {
+    const Station *s = &tab[i];
+    if (s->hw_state == SCHED_CHECK || s->hw_state == SCHED_SYNCED) {
+      if (reached(now, hw_window_open(s)) && !reached(now, hw_window_close(s))) return true;
+    }
+    switch (s->state) {
+      case SCHED_LEARN:
+      case SCHED_CHECK:
+      case SCHED_RESYNC:
+        return true;   // the rhythm is not known, only listening finds it
+      case SCHED_SYNCED:
+        if (reached(now, window_open(s)) && !reached(now, window_close(s))) return true;
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+
+static void consider(uint32_t now, uint32_t at, uint32_t *best) {
+  uint32_t d = (int32_t)(at - now) < 0 ? 0u : at - now;
+  if (d < *best) *best = d;
+}
+
+uint32_t sched_next_deadline(uint32_t now) {
+  tick(now);
+  uint32_t best = SCHED_NO_DEADLINE;
+  if (scan_duration_ms) consider(now, scanning ? scan_until : scan_next, &best);
+  for (uint8_t i = 0; i < SCHED_MAX_STATIONS; i++) {
+    const Station *s = &tab[i];
+    if (s->hw_state == SCHED_CHECK || s->hw_state == SCHED_SYNCED) {
+      consider(now, reached(now, hw_window_open(s)) ? hw_window_close(s) : hw_window_open(s), &best);
+    }
+    if (s->state == SCHED_SYNCED) {
+      consider(now, reached(now, window_open(s)) ? window_close(s) : window_open(s), &best);
+    } else if (s->state != SCHED_FREE) {
+      consider(now, s->deadline, &best);
+    }
+  }
+  return best;
+}
+
+void sched_log_status(uint32_t now) {
+  char line[128];
+  for (uint8_t i = 0; i < SCHED_MAX_STATIONS; i++) {
+    const Station *s = &tab[i];
+    if (s->state == SCHED_FREE) continue;
+    const int32_t due = (int32_t)(s->next - now);
+    const int32_t hw_due = (int32_t)(s->hw_next - now);
+    snprintf(line, sizeof(line),
+             "SCHED 0x%06lX st=%u T=%lums g=%lums in=%ldms hit=%u miss=%u hw=%u/%lums/%ldms\r\n",
+             (unsigned long)s->id, (unsigned)s->state, (unsigned long)s->period,
+             (unsigned long)s->guard, (long)due, (unsigned)s->hits, (unsigned)s->misses,
+             (unsigned)s->hw_state, (unsigned long)s->hw_period,
+             s->hw_state == SCHED_FREE ? 0L : (long)hw_due);
+    log_i(line);
+  }
+}
+
+uint8_t sched_snapshot(SchedInfo *out, uint8_t max) {
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < SCHED_MAX_STATIONS && n < max; i++) {
+    const Station *s = &tab[i];
+    if (s->state == SCHED_FREE) continue;
+    out[n].id = s->id;
+    out[n].period = s->period;
+    out[n].next = s->next;
+    out[n].guard = s->guard;
+    out[n].hits = s->hits;
+    out[n].misses = s->misses;
+    out[n].state = s->state;
+    out[n].hw_period = s->hw_period;
+    out[n].hw_next = s->hw_next;
+    out[n].hw_guard = s->hw_guard;
+    out[n].hw_state = s->hw_state;
+    n++;
+  }
+  return n;
+}
+
+bool sched_scanning(void) { return scanning; }

@@ -308,6 +308,7 @@ setInterval(() => {
 function onStatus(s) {
   state.status = s;
   renderDiag(s.diag);
+  renderNight(s.night);
   if (s.time) state.clockOffset = s.time - Date.now() / 1000;
   const wifi = s.wifi || {};
 
@@ -1410,7 +1411,7 @@ function expireRecords() {
 // Fields edited on the Settings tab; saved together through the save bar.
 const SETTINGS_FIELDS = ['deviceName', 'lat', 'lon', 'elevation', 'sendAPRS', 'aprsServer', 'aprsPort',
   'sendBreezedude', 'sendDiagnostics', 'receiveFanet', 'receiveFlarm', 'receiveAdsl', 'flarmDutyProfile', 'batteryPowered',
-  'solarPowered', 'sleepScheduleEnabled', 'sleepOffTime', 'sleepOnTime'];
+  'solarPowered', 'sleepScheduleEnabled', 'sleepOffTime', 'sleepOnTime', 'nightSaving'];
 // Saved with save_settings too, but immediately, from the System tab.
 const UPDATE_FIELDS = ['autoUpdate', 'updateBranch'];
 const WIFI_FIELDS = ['sta_ssid', 'sta_password', 'ap_ssid', 'ap_password', 'keepAP', 'apAutoOff'];
@@ -1488,6 +1489,19 @@ function wifiDirty() {
 }
 
 // Dependent visibility and the "name and position first" guard.
+// Tonight's times under the night mode switch, in the browser's time zone.
+function renderNight(n) {
+  const hint = $('nightHint');
+  if (!n || !n.sunset) {
+    hint.textContent = n ? 'No night at this position and season.' : '';
+    return;
+  }
+  const hm = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  hint.textContent = n.active
+    ? `Active until sunrise at ${hm(n.sunrise)} - the radio wakes for ${n.stations} weather stations.`
+    : `Tonight from ${hm(n.sunset)} to ${hm(n.sunrise)}.`;
+}
+
 function updateFormUi() {
   const name = readField('deviceName');
   const ready = setupComplete(name, readField('lat'), readField('lon'));

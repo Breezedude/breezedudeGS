@@ -14,3 +14,4 @@ release/
 sdkconfig.test
 sdkconfig.alpha
 sdkconfig.alpha.old
+tools/host_test/build/

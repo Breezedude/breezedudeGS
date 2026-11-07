@@ -13,6 +13,8 @@ idf_component_register(
         "protocols/adsl.cpp"
         "protocols/manchester.cpp"
         "radio/bd_radio.cpp"
+        "radio/bd_night.cpp"
+        "radio/fanet_sched.cpp"
         "net/bd_net.cpp"
         "net/bd_diag.cpp"
         "web/bd_http.cpp"

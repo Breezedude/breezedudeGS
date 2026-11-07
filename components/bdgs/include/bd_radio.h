@@ -28,6 +28,9 @@ void bd_radio_notify();
 // sampled it.
 float bd_radio_noise_floor();
 
+// Night mode has the transceiver asleep between two receive windows.
+bool bd_radio_night_sleeping();
+
 // Receive paths, called from the radio task.
 void handle_fanet();
 #if CONFIG_BDGS_ENABLE_FSK_RX

@@ -16,6 +16,7 @@
 #include "bd_board.h"
 #include "bd_console.h"
 #include "bd_net.h"
+#include "bd_night.h"
 #include "bd_repeat.h"
 #include "bd_state.h"
 #include "bd_stats.h"
@@ -24,6 +25,8 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"
+#include "fanet_sched.h"
 #include "flarm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -80,11 +83,19 @@ RadioIrqFlag receivedFlag;
 static TaskHandle_t s_radio_task = nullptr;
 static SemaphoreHandle_t s_radio_mutex = nullptr;
 
+// When DIO1 rose, in millis(): the night plan (fanet_sched.h) measures the
+// stations' periods with it, so it is taken in the interrupt and not when the
+// task gets round to the packet.
+static volatile uint32_t s_irq_ms = 0;
+// Night mode has put the transceiver to sleep between two windows.
+static bool s_rx_asleep = false;
+
 // --- interrupt / light-sleep wake -------------------------------------------
 static void IRAM_ATTR dio1_isr(void*) {
   // Level triggered (the only kind that wakes light sleep), so the interrupt has
   // to be masked here and is re-armed once the packet has been read out.
   gpio_intr_disable((gpio_num_t)BD_PIN_LORA_DIO1);
+  s_irq_ms = (uint32_t)(esp_timer_get_time() / 1000);
   receivedFlag.setFromIsr();
   if (s_radio_task) {
     vTaskNotifyGiveFromISR(s_radio_task, nullptr);
@@ -95,6 +106,7 @@ void RadioIrqFlag::arm() {
   rearm_pending_ = false;
   gpio_intr_enable((gpio_num_t)BD_PIN_LORA_DIO1);
   if (gpio_get_level((gpio_num_t)BD_PIN_LORA_DIO1)) {
+    if (!flag_) s_irq_ms = millis();
     flag_ = true;
   }
 }
@@ -313,11 +325,12 @@ static bool flarm_position_known() {
            fabsf(settings.longitude - 12.0f) < 0.001f);
 }
 
+// Nobody flies at night: the night mode leaves FLARM and ADS-L off until sunrise.
 bool flarm_enabled() {
-  return settings.receiveFlarm && radio_phy != nullptr && flarm_position_known();
+  return settings.receiveFlarm && radio_phy != nullptr && flarm_position_known() && !bd_night_active();
 }
 
-bool adsl_enabled() { return settings.receiveAdsl && radio_phy != nullptr; }
+bool adsl_enabled() { return settings.receiveAdsl && radio_phy != nullptr && !bd_night_active(); }
 
 bool fanet_enabled() { return settings.receiveFanet; }
 
@@ -996,6 +1009,7 @@ void handle_fanet() {
 
   if (!receivedFlag) return;
   receivedFlag = false;
+  const uint32_t t_rx = s_irq_ms;
 
   int numBytes = radio_phy->getPacketLength();
   if (numBytes <= 0 || numBytes > 255) {
@@ -1024,6 +1038,14 @@ void handle_fanet() {
 
   fanet_header* header = (fanet_header*)byteArr;
   bd_diag_note_packet(header->vendor, header->address, header->type, radio_phy->getRSSI(), radio_phy->getSNR());
+  // The night plan learns the stations' rhythms all day, from what is received
+  // anyway - so it is ready at sunset.
+  const uint32_t sender_id = ((uint32_t)header->vendor << 16) | header->address;
+  if (header->type == FANET_PCK_TYPE_WEATHER) {
+    sched_note_weather(sender_id, t_rx);
+  } else if (header->type == FANET_PCK_TYPE_HW_INFO) {
+    sched_note_hwinfo(sender_id, t_rx);
+  }
   if (header->type == FANET_PCK_TYPE_WEATHER) {
     weatherData wd;
     if (unpack_weatherdata(byteArr, (size_t)numBytes, &wd, radio_phy->getSNR(),
@@ -1179,7 +1201,7 @@ static volatile float s_noise_floor_dbm = NAN;
 
 static void sample_noise_floor() {
   static uint32_t lastSampleMs = 0;
-  if (radio_phy == nullptr || radio_mode != RADIO_MODE_FANET || receivedFlag) return;
+  if (radio_phy == nullptr || radio_mode != RADIO_MODE_FANET || s_rx_asleep || receivedFlag) return;
   if (lastSampleMs != 0 && millis() - lastSampleMs < 10000) return;
   lastSampleMs = millis();
 
@@ -1217,11 +1239,49 @@ void bd_radio_notify() {
   if (s_radio_task) xTaskNotifyGive(s_radio_task);
 }
 
+// Night mode: the transceiver sleeps unless a weather station's packet is due
+// or the hourly scan is running. Returns how long that plan holds.
+static uint32_t night_radio_plan() {
+  const bool night = radio_phy != nullptr && radio_mode == RADIO_MODE_FANET && bd_night_active();
+  if (!night) {
+    if (s_rx_asleep) {
+      radio_phy->startReceive();
+      s_rx_asleep = false;
+      ESP_LOGI(TAG, "night mode over, receiving continuously");
+    }
+    return UINT32_MAX;
+  }
+  const uint32_t now = millis();
+  if (sched_rx_wanted(now)) {
+    if (s_rx_asleep) {
+      radio_phy->startReceive();  // wakes the transceiver
+      s_rx_asleep = false;
+    }
+  } else if (!s_rx_asleep && !receivedFlag) {
+    if (lora_module == RADIO_MODULE_SX1262 || lora_module == RADIO_MODULE_LLCC68) {
+      // Pending IRQ flags would keep DIO1 high through the sleep.
+      radio_phy->clearIrqFlags(0xFFFF);
+      static_cast<SX126x*>(radio_phy)->sleep(true);  // warm start, keeps the configuration
+    } else {
+      radio_phy->sleep();
+    }
+    s_rx_asleep = true;
+  }
+  const uint32_t next = sched_next_deadline(now);
+  return next == SCHED_NO_DEADLINE ? UINT32_MAX : next;
+}
+
+bool bd_radio_night_sleeping() { return s_rx_asleep; }
+
 static void radio_task(void*) {
   for (;;) {
     uint32_t next = flarm_scheduler_next_delay_ms();
     const uint32_t repeatNext = bd_repeat_next_delay_ms();
     if (repeatNext < next) next = repeatNext;
+    bd_radio_lock();
+    const uint32_t nightNext = night_radio_plan();
+    bd_radio_unlock();
+    if (nightNext < next) next = nightNext;
     // Without an FSK schedule there is nothing to wake up for except a packet.
     // The ceiling only exists so a settings change is picked up even if the
     // notification was missed.

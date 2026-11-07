@@ -207,6 +207,7 @@ static String build_report() {
   features["breezedude"] = settings.sendBreezedude;
   features["lora_ota"] = (bool)BREEZEDUDE_GS_ENABLE_LORA_OTA;
   features["sleep_schedule"] = settings.sleepScheduleEnabled;
+  features["night_saving"] = settings.nightSaving;
   settings_unlock();
 
   doc["fw"] = fw_version;

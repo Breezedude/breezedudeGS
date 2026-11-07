@@ -51,18 +51,23 @@ struct Settings {
   // Diagnostic reports to Breezedude (net/bd_diag.cpp), on unless switched off.
   bool disableDiagnostics;
 
+  // Night mode (radio/bd_night.cpp): between sunset and sunrise the radio only
+  // listens when a weather station's packet is due. Carved out of reserved[].
+  bool nightSaving;
+
   // Reserved for future settings, always zero. New fields are carved out of
   // this array so sizeof(Settings) stays fixed, and they must treat 0 as their
   // default: every blob saved before the field existed holds zeros here. (A
   // setting whose natural default is "on" gets an inverted name, e.g.
   // disableXyz.) Sized so the struct ends without tail padding.
-  uint8_t reserved[15];
+  uint8_t reserved[14];
 
   Settings() {
    memset(reserved, 0, sizeof(reserved));
    memset(passSalt, 0, sizeof(passSalt));
    memset(passHash, 0, sizeof(passHash));
    disableDiagnostics = false;
+   nightSaving = false;
    strncpy(wifi_ssid, DEFAULT_STA_SSID, sizeof(wifi_ssid));
    strncpy(wifi_password, DEFAULT_STA_PASSWD, sizeof(wifi_password));
    strncpy(ap_ssid, "BD-Groundstation", sizeof(ap_ssid));
@@ -97,7 +102,8 @@ static_assert(offsetof(Settings, apAutoOff) == 374, "Settings layout changed - s
 static_assert(offsetof(Settings, solarPowered) == 375, "Settings layout changed - stored settings would shift");
 static_assert(offsetof(Settings, passSalt) == 376, "Settings layout changed - stored settings would shift");
 static_assert(offsetof(Settings, disableDiagnostics) == 424, "Settings layout changed - stored settings would shift");
-static_assert(offsetof(Settings, reserved) == 425, "Settings layout changed - stored settings would shift");
+static_assert(offsetof(Settings, nightSaving) == 425, "Settings layout changed - stored settings would shift");
+static_assert(offsetof(Settings, reserved) == 426, "Settings layout changed - stored settings would shift");
 static_assert(sizeof(Settings) == 440, "Settings size changed - carve new fields out of reserved[]");
 
 
