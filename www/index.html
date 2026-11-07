@@ -513,8 +513,9 @@
 
     <div class="card" id="portalCard">
       <div class="card-head"><h2>Breezedude portal</h2></div>
-      <p class="hint warn" id="diagRejected" hidden>The server rejects this station's device key. An admin has to
-        remove the station on the server before it can report again.</p>
+      <p class="hint warn" id="diagRejected" hidden>The server rejects this station's device key, usually because
+        the station was erased and reinstalled. It accepts the new key 24 hours after the last accepted report and
+        removes the account links then - link the station again afterwards. An admin can also reset the key at once.</p>
       <dl class="kv">
         <dt>Diagnostics</dt><dd id="diagState">-</dd>
       </dl>
