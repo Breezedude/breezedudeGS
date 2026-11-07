@@ -407,3 +407,29 @@ void bd_repeat_reset() {
   s_event_count = 0;
   portEXIT_CRITICAL(&s_mux);
 }
+
+size_t bd_repeat_records_after(uint32_t afterSeq, uint32_t minAgeMs, BdPacketRecord* out, size_t max) {
+  const uint32_t now = millis();
+  size_t n = 0;
+  portENTER_CRITICAL(&s_mux);
+  // Oldest first; the counter runs on since boot, a reset only empties the ring.
+  for (int i = s_event_count; i >= 1 && n < max; i--) {
+    const RepeatEvent& e = s_events[(s_event_head - i + kEvents) % kEvents];
+    if (e.seq <= afterSeq) continue;
+    if (now - e.openedMs < minAgeMs) break;  // newer ones are younger still
+    BdPacketRecord& r = out[n++];
+    r.seq = e.seq;
+    r.ageMs = now - e.openedMs;
+    r.vid = e.vid;
+    r.addr = e.addr;
+    r.type = e.type;
+    r.kind = e.kind;
+    r.rssiDirect = e.rssiDirect;
+    r.rssiCopy = e.rssiCopy;
+    r.snrDirect = e.snrDirect;
+    r.snrCopy = e.snrCopy;
+    r.delayMs = e.delayMs;
+  }
+  portEXIT_CRITICAL(&s_mux);
+  return n;
+}

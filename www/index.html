@@ -378,6 +378,14 @@
         <input type="checkbox" id="sendDiagnostics">
         <span class="text">Send GS diagnostics to Breezedude<small>Recommended. Sends the station's state every 10 minutes to monitor it in the device portal. Turn off to save mobile data.</small></span>
       </label>
+      <label class="check indent">
+        <input type="checkbox" id="packetLog">
+        <span class="text">Send packet history<small>Time, sender and reception of every packet received, uploaded once a minute for the device portal - never the content. Uses more mobile data.</small></span>
+      </label>
+      <label class="check indent">
+        <input type="checkbox" id="remoteConfig">
+        <span class="text">Allow changes from the device portal<small>Its owners may switch the packet history, night mode, FLARM, ADS-L and updates - never WiFi, password, name or position.</small></span>
+      </label>
     </div>
 
     <div class="card">

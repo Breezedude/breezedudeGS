@@ -1410,7 +1410,7 @@ function expireRecords() {
 // --------------------------------------------------------------- settings --
 // Fields edited on the Settings tab; saved together through the save bar.
 const SETTINGS_FIELDS = ['deviceName', 'lat', 'lon', 'elevation', 'sendAPRS', 'aprsServer', 'aprsPort',
-  'sendBreezedude', 'sendDiagnostics', 'receiveFanet', 'receiveFlarm', 'receiveAdsl', 'flarmDutyProfile', 'batteryPowered',
+  'sendBreezedude', 'sendDiagnostics', 'packetLog', 'remoteConfig', 'receiveFanet', 'receiveFlarm', 'receiveAdsl', 'flarmDutyProfile', 'batteryPowered',
   'solarPowered', 'sleepScheduleEnabled', 'sleepOffTime', 'sleepOnTime', 'nightSaving'];
 // Saved with save_settings too, but immediately, from the System tab.
 const UPDATE_FIELDS = ['autoUpdate', 'updateBranch'];

@@ -24,3 +24,21 @@ uint32_t bd_repeat_next_delay_ms();
 void bd_repeat_write(BdJsonOut& out);
 
 void bd_repeat_reset();
+
+// One received packet for the packet history in the device portal: when, from
+// whom and how it came in - never its content.
+struct BdPacketRecord {
+  uint32_t seq;    // counts from boot
+  uint32_t ageMs;  // how long ago it was received
+  uint8_t vid;
+  uint16_t addr;
+  uint8_t type;
+  uint8_t kind;    // 0 direct + repeated, 1 direct, 2 repeated only, 3 no forward bit
+  int8_t rssiDirect, rssiCopy;
+  int16_t snrDirect, snrCopy;  // 0.1 dB
+  uint16_t delayMs;            // repeater delay, kind 0 only
+};
+
+// Packets after afterSeq that are at least minAgeMs old, oldest first. A packet
+// can still gain a late repeated copy for a minute, so only older ones are final.
+size_t bd_repeat_records_after(uint32_t afterSeq, uint32_t minAgeMs, BdPacketRecord* out, size_t max);

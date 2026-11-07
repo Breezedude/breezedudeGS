@@ -16,6 +16,9 @@
 #ifndef GS_CLAIM_URL
 #define GS_CLAIM_URL "https://fanet.breezedude.de/api/gs/claim-code"
 #endif
+#ifndef GS_PACKETS_URL
+#define GS_PACKETS_URL "https://fanet.breezedude.de/api/gs/packets"
+#endif
 #define GS_PORTAL_CLAIM_URL "https://devices.breezedude.de/gs-claim"
 
 void bd_diag_begin();

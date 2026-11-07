@@ -55,12 +55,20 @@ struct Settings {
   // listens when a weather station's packet is due. Carved out of reserved[].
   bool nightSaving;
 
+  // Packet history to the device portal (net/bd_diag.cpp): every packet's time,
+  // sender and reception, uploaded once a minute. Off unless switched on.
+  bool packetLog;
+
+  // Settings changes from the device portal (net/bd_diag.cpp), allowed unless
+  // switched off on the station.
+  bool disableRemoteConfig;
+
   // Reserved for future settings, always zero. New fields are carved out of
   // this array so sizeof(Settings) stays fixed, and they must treat 0 as their
   // default: every blob saved before the field existed holds zeros here. (A
   // setting whose natural default is "on" gets an inverted name, e.g.
   // disableXyz.) Sized so the struct ends without tail padding.
-  uint8_t reserved[14];
+  uint8_t reserved[12];
 
   Settings() {
    memset(reserved, 0, sizeof(reserved));
@@ -68,6 +76,8 @@ struct Settings {
    memset(passHash, 0, sizeof(passHash));
    disableDiagnostics = false;
    nightSaving = false;
+   packetLog = false;
+   disableRemoteConfig = false;
    strncpy(wifi_ssid, DEFAULT_STA_SSID, sizeof(wifi_ssid));
    strncpy(wifi_password, DEFAULT_STA_PASSWD, sizeof(wifi_password));
    strncpy(ap_ssid, "BD-Groundstation", sizeof(ap_ssid));
@@ -103,7 +113,9 @@ static_assert(offsetof(Settings, solarPowered) == 375, "Settings layout changed 
 static_assert(offsetof(Settings, passSalt) == 376, "Settings layout changed - stored settings would shift");
 static_assert(offsetof(Settings, disableDiagnostics) == 424, "Settings layout changed - stored settings would shift");
 static_assert(offsetof(Settings, nightSaving) == 425, "Settings layout changed - stored settings would shift");
-static_assert(offsetof(Settings, reserved) == 426, "Settings layout changed - stored settings would shift");
+static_assert(offsetof(Settings, packetLog) == 426, "Settings layout changed - stored settings would shift");
+static_assert(offsetof(Settings, disableRemoteConfig) == 427, "Settings layout changed - stored settings would shift");
+static_assert(offsetof(Settings, reserved) == 428, "Settings layout changed - stored settings would shift");
 static_assert(sizeof(Settings) == 440, "Settings size changed - carve new fields out of reserved[]");
 
 

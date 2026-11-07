@@ -4,7 +4,12 @@
 // forms the differences. The station list holds what was heard since the last
 // report. No SSID, password, IP or other personal data goes into the report.
 //
-// Only these two requests carry the device key, so only they go over HTTPS,
+// The answer to a report can carry settings from the device portal (see
+// apply_remote_config below), and with the packet history switched on the
+// station also uploads every received packet once a minute - time, sender and
+// reception, never the content.
+//
+// Only these requests carry the device key, so only they go over HTTPS,
 // with the certificate checked against Let's Encrypt's roots: ISRG Root X1 and,
 // as the chain leads there through a cross-signature valid until 2032, also
 // ISRG Root X2. A failed HTTPS request skips the report; there is no fallback
@@ -14,6 +19,7 @@
 #include <ArduinoJson.h>
 #include <math.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "Arduino.h"
@@ -21,6 +27,7 @@
 #include "bd_net.h"
 #include "bd_power.h"
 #include "bd_radio.h"
+#include "bd_repeat.h"
 #include "bd_state.h"
 #include "bd_web.h"
 #include "esp_http_client.h"
@@ -42,6 +49,11 @@ static constexpr uint32_t kRssiSampleMs = 60 * 1000;
 static constexpr int kTimeoutMs = 5000;
 static constexpr int kMaxStations = 64;
 static const char* kNvsNamespace = "gs_diag";
+// Packet history: one upload a minute, of packets that are final (a repeated
+// copy can still come in for a minute after the original).
+static constexpr uint32_t kPacketIntervalMs = 60 * 1000;
+static constexpr uint32_t kPacketFinalMs = 60 * 1000;
+static constexpr size_t kPacketBatch = 120;
 
 extern const char isrg_roots_pem[] asm("_binary_isrg_roots_pem_start");
 
@@ -76,6 +88,13 @@ static int s_last_code = 0;
 static bool s_accepted = false;
 static bool s_rejected = false;
 
+// Settings from the device portal: the revision applied last (kept in NVS) and
+// what came of the latest one, both sent back with the next report.
+static uint32_t s_cfg_rev = 0;
+static char s_cfg_result[96] = "";
+static uint32_t s_packets_after = 0;  // packet history: last seq the server took
+static uint32_t s_next_packets_ms = kFirstReportMs;
+
 static void to_hex(const uint8_t* data, size_t len, char* out, bool upper) {
   for (size_t i = 0; i < len; i++) snprintf(out + 2 * i, 3, upper ? "%02X" : "%02x", data[i]);
 }
@@ -103,6 +122,7 @@ void bd_diag_begin() {
   uint8_t accepted = 0;
   nvs_get_u8(nvs, "accepted", &accepted);
   s_accepted = accepted;
+  nvs_get_u32(nvs, "cfg_rev", &s_cfg_rev);
   nvs_close(nvs);
 }
 
@@ -208,7 +228,20 @@ static String build_report() {
   features["lora_ota"] = (bool)BREEZEDUDE_GS_ENABLE_LORA_OTA;
   features["sleep_schedule"] = settings.sleepScheduleEnabled;
   features["night_saving"] = settings.nightSaving;
+  features["packet_log"] = settings.packetLog;
+  // What the device portal may change, as it is now on the station.
+  JsonObject current = doc["settings"].to<JsonObject>();
+  current["packetLog"] = settings.packetLog;
+  current["nightSaving"] = settings.nightSaving;
+  current["receiveFlarm"] = settings.receiveFlarm;
+  current["receiveAdsl"] = settings.receiveAdsl;
+  current["flarmDutyProfile"] = settings.flarmDutyProfile;
+  current["autoUpdate"] = settings.autoUpdate;
+  current["updateBranch"] = settings.updateBranch;
+  doc["remote_config"] = !settings.disableRemoteConfig;
   settings_unlock();
+  doc["config_rev"] = s_cfg_rev;
+  if (s_cfg_result[0]) doc["config_result"] = s_cfg_result;
 
   doc["fw"] = fw_version;
   doc["fw_build"] = build_date_iso();
@@ -330,18 +363,146 @@ static void note_result(int code) {
   if (code == 204 && !s_accepted) set_accepted(true);
 }
 
+// Settings the device portal may change: harmless ones only. WiFi, access
+// point, password, name and position never - a wrong value there could lock
+// the owner out or put false data into OGN.
+static bool apply_remote_setting(const char* key, JsonVariantConst value, bool* branchChanged) {
+  if (strcmp(key, "packetLog") == 0 && value.is<bool>()) {
+    settings.packetLog = value.as<bool>();
+  } else if (strcmp(key, "nightSaving") == 0 && value.is<bool>()) {
+    settings.nightSaving = value.as<bool>();
+  } else if (strcmp(key, "receiveFlarm") == 0 && value.is<bool>()) {
+    // Same rule as on the station: FLARM needs the real position.
+    settings.receiveFlarm =
+        value.as<bool>() && hasRequiredSetupValues(settings.deviceName, settings.latitude, settings.longitude);
+  } else if (strcmp(key, "receiveAdsl") == 0 && value.is<bool>()) {
+    settings.receiveAdsl = value.as<bool>();
+  } else if (strcmp(key, "flarmDutyProfile") == 0 && value.is<int>() && value.as<int>() >= 0 &&
+             value.as<int>() <= 2) {
+    settings.flarmDutyProfile = (uint8_t)value.as<int>();
+  } else if (strcmp(key, "autoUpdate") == 0 && value.is<bool>()) {
+    settings.autoUpdate = value.as<bool>();
+  } else if (strcmp(key, "updateBranch") == 0 && value.is<const char*>() &&
+             update_branch_allowed(value.as<const char*>())) {
+    *branchChanged = strcmp(settings.updateBranch, value.as<const char*>()) != 0;
+    strncpy(settings.updateBranch, value.as<const char*>(), sizeof(settings.updateBranch));
+    settings.updateBranch[sizeof(settings.updateBranch) - 1] = '\0';
+  } else {
+    return false;
+  }
+  return true;
+}
+
+// {"config":{"rev":7,"set":{"packetLog":true,...}}} in the answer to a report
+// or a packet upload. Only a newer revision is applied; the result goes back
+// with the next report, so the portal shows whether it arrived.
+static void apply_remote_config(const char* answer) {
+  JsonDocument doc;
+  if (deserializeJson(doc, answer) != DeserializationError::Ok) return;
+  JsonObjectConst cfg = doc["config"];
+  if (cfg.isNull()) return;
+  const uint32_t rev = cfg["rev"] | 0u;
+  if (rev <= s_cfg_rev) return;
+  if (settings.disableRemoteConfig) {
+    snprintf(s_cfg_result, sizeof(s_cfg_result), "refused: switched off on the station");
+    return;
+  }
+
+  String changed, ignored;
+  bool branchChanged = false;
+  settings_lock();
+  for (JsonPairConst kv : cfg["set"].as<JsonObjectConst>()) {
+    String& list = apply_remote_setting(kv.key().c_str(), kv.value(), &branchChanged) ? changed : ignored;
+    if (list.length()) list += ", ";
+    list += kv.key().c_str();
+  }
+  settings_unlock();
+  save_preferences();
+  bd_radio_notify();
+  if (branchChanged) onUpdateBranchChanged();
+
+  s_cfg_rev = rev;
+  nvs_handle_t nvs;
+  if (nvs_open(kNvsNamespace, NVS_READWRITE, &nvs) == ESP_OK) {
+    nvs_set_u32(nvs, "cfg_rev", rev);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+  }
+  snprintf(s_cfg_result, sizeof(s_cfg_result), ignored.length() ? "ok, ignored: %s" : "ok", ignored.c_str());
+  webconsole_print("Device portal changed the settings: " + (changed.length() ? changed : String("nothing")) +
+                   (ignored.length() ? " (ignored: " + ignored + ")" : String("")));
+}
+
 static void send_report() {
   const String body = build_report();
   if (!s_body_logged) {
     s_body_logged = true;
     ESP_LOGI(TAG, "report body: %s", body.c_str());
   }
-  const int code = post_json(GS_DIAG_URL, body, nullptr, 0);
+  static char answer[1024];
+  answer[0] = 0;
+  const int code = post_json(GS_DIAG_URL, body, answer, sizeof(answer));
   ESP_LOGI(TAG, "report -> %d", code);
-  note_result(code);
+  note_result(code == 200 ? 204 : code);
+  if (code == 200) apply_remote_config(answer);
   portENTER_CRITICAL(&s_mux);
   s_station_count = 0;
   portEXIT_CRITICAL(&s_mux);
+}
+
+// Packet history: everything final since the last upload, as compact arrays
+// [epoch ms, seq, sender, type, kind, rssi, snr x10, rssi copy, snr copy x10,
+// repeater delay ms]. A failed upload is repeated with the same packets a
+// minute later; what drops out of the ring meanwhile is lost.
+static void send_packets() {
+  static BdPacketRecord records[kPacketBatch];
+  const size_t n = bd_repeat_records_after(s_packets_after, kPacketFinalMs, records, kPacketBatch);
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  const uint64_t nowMs = (uint64_t)tv.tv_sec * 1000ULL + tv.tv_usec / 1000;
+
+  JsonDocument doc;
+  JsonArray events = doc["events"].to<JsonArray>();
+  for (size_t i = 0; i < n; i++) {
+    const BdPacketRecord& r = records[i];
+    // Without a forward bit the packet is the sender's own transmission; its
+    // reception is filed as the copy's in the timeline, here it is the direct one.
+    const bool plain = r.kind == 3;
+    JsonArray e = events.add<JsonArray>();
+    e.add(nowMs - r.ageMs);
+    e.add(r.seq);
+    e.add(((uint32_t)r.vid << 16) | r.addr);
+    e.add(r.type);
+    e.add(r.kind);
+    if (r.kind == 2) {
+      e.add(nullptr);
+      e.add(nullptr);
+    } else {
+      e.add(plain ? r.rssiCopy : r.rssiDirect);
+      e.add(plain ? r.snrCopy : r.snrDirect);
+    }
+    if (r.kind == 0 || r.kind == 2) {
+      e.add(r.rssiCopy);
+      e.add(r.snrCopy);
+    } else {
+      e.add(nullptr);
+      e.add(nullptr);
+    }
+    if (r.kind == 0) {
+      e.add(r.delayMs);
+    } else {
+      e.add(nullptr);
+    }
+  }
+  String body;
+  serializeJson(doc, body);
+  static char answer[1024];
+  answer[0] = 0;
+  const int code = post_json(GS_PACKETS_URL, body, answer, sizeof(answer));
+  ESP_LOGD(TAG, "packets (%u) -> %d", (unsigned)n, code);
+  if (code == 401) note_result(401);
+  if (code >= 200 && code < 300 && n) s_packets_after = records[n - 1].seq;
+  if (code == 200) apply_remote_config(answer);
 }
 
 static void handle_claim(int fd) {
@@ -398,6 +559,14 @@ void bd_diag_tick() {
   if (claim_fd >= 0) {
     s_claim_fd = -1;
     handle_claim(claim_fd);
+  }
+
+  // The packet history rides on the same conditions as the report: switched on,
+  // accepted by the server, WiFi and clock there.
+  if (settings.packetLog && !settings.disableDiagnostics && s_accepted && !s_rejected && connected &&
+      time(nullptr) >= 1700000000 && !ota_gs_busy() && (int32_t)(now - s_next_packets_ms) >= 0) {
+    s_next_packets_ms = now + kPacketIntervalMs;
+    send_packets();
   }
 
   if ((int32_t)(now - s_next_report_ms) < 0) return;

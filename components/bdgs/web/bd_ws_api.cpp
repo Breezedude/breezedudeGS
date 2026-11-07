@@ -553,6 +553,8 @@ void bd_ws_handle_command(int fd, const char* data, size_t len) {
     resp["aprsPort"] = settings.aprsPort;
     resp["sendBreezedude"] = settings.sendBreezedude;
     resp["sendDiagnostics"] = !settings.disableDiagnostics;
+    resp["packetLog"] = settings.packetLog;
+    resp["remoteConfig"] = !settings.disableRemoteConfig;
     resp["receiveFlarm"] = settings.receiveFlarm;
     resp["receiveAdsl"] = settings.receiveAdsl;
     resp["receiveFanet"] = settings.receiveFanet;
@@ -706,6 +708,8 @@ void bd_ws_handle_command(int fd, const char* data, size_t len) {
     settings.flarmDutyProfile = (requestedProfile <= 2) ? requestedProfile : 0;
     settings.aprsPort = doc["aprsPort"].as<int>();
     settings.disableDiagnostics = !(doc["sendDiagnostics"] | true);
+    settings.packetLog = doc["packetLog"] | false;
+    settings.disableRemoteConfig = !(doc["remoteConfig"] | true);
     settings.autoUpdate = doc["autoUpdate"].as<bool>();
     strncpy(settings.updateBranch, new_updateBranch, sizeof(settings.updateBranch));
     settings.updateBranch[sizeof(settings.updateBranch) - 1] = '\0';
