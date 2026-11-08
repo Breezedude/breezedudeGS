@@ -15,4 +15,5 @@ void config_gs_try_update(const hwInfoData& info);
 
 // Immediately check and push pending config for a specific device (e.g. triggered from OTA path)
 // nonce: device nonce from HWInfo announcement; used to validate the device ACK after sending
-void config_gs_check_device(const String& deviceId, uint32_t nonce = 0u);
+// Returns true when the device confirmed at least one config: it restarts to apply it.
+bool config_gs_check_device(const String& deviceId, uint32_t nonce = 0u);

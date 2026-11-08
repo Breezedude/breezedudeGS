@@ -1204,6 +1204,17 @@ void ota_gs_try_update(const hwInfoData& info) {
     return;
   }
 
+  // Pending settings first, in the same window the no-update branch uses: an
+  // update that keeps failing used to hold them back for good, since this branch
+  // never sent them. The station restarts to apply them, so the update waits for
+  // its next report.
+  if(config_gs_check_device(String(deviceId), ann.nonce)) {
+    ota_status("OTA: settings applied first, update follows with the next report");
+    recordOtaHistory(ann, 0, "config_first");
+    s_busy = false;
+    return;
+  }
+
   ota_status(String("OTA: update available, ") + manifest.imageSize + " bytes");
   ota_status(String("OTA: installed ") + formatVersionBcd(ann.versionBcd) +
              " (0x" + String(ann.versionBcd, HEX) + ") -> target " +

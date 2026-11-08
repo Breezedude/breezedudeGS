@@ -261,19 +261,21 @@ static bool transmitConfigPacket(const uint8_t* payload, size_t payloadLen) {
   return true;
 }
 
-static void processConfigUpdate(const String& fanetId, uint32_t nonce = 0u) {
+// True when the device confirmed at least one config.
+static bool processConfigUpdate(const String& fanetId, uint32_t nonce = 0u) {
   // Loop until all pending configs for this device are confirmed.
   // The backend may track each setting as a separate session, so after one
   // confirm the next poll immediately re-checks rather than waiting 60 seconds.
+  bool confirmed = false;
   for(int attempt = 0; attempt < 16; ++attempt) {
     ConfigPendingResponse response;
 
     if(!queryPendingConfigs(fanetId, response)) {
-      return;
+      return confirmed;
     }
 
     if(!response.pending) {
-      return;  // No (more) config updates pending
+      return confirmed;  // No (more) config updates pending
     }
 
     config_status(String("Config: ") + response.count + " config(s) pending for " + fanetId);
@@ -283,24 +285,24 @@ static void processConfigUpdate(const String& fanetId, uint32_t nonce = 0u) {
     size_t packetLen = 0;
     if(!parseHexBytes(response.packetHex, packet, sizeof(packet), packetLen)) {
       config_status("Config: failed to parse hex packet");
-      return;
+      return confirmed;
     }
 
     if(packetLen != response.packetLength) {
       config_status(String("Config: packet length mismatch ") + packetLen + " vs " + response.packetLength);
-      return;
+      return confirmed;
     }
 
     // Verify packet type
     if(packetLen < 1 || packet[0] != CONFIG_UPDATE_PKT_TYPE) {
       config_status(String("Config: invalid packet type 0x") + String(packet[0], HEX));
-      return;
+      return confirmed;
     }
 
     // Transmit via LoRa
     if(!transmitConfigPacket(packet, packetLen)) {
       config_status("Config: transmission failed for " + fanetId);
-      return;
+      return confirmed;
     }
 
     config_status("Config: packet transmitted successfully for " + fanetId);
@@ -309,30 +311,32 @@ static void processConfigUpdate(const String& fanetId, uint32_t nonce = 0u) {
     uint8_t ackStatus = 0xFFu;
     if(!waitForConfigAck(nonce, ackStatus, CONFIG_ACK_TIMEOUT_MS)) {
       config_status("Config: no ACK from device for " + fanetId);
-      return;
+      return confirmed;
     }
     if(ackStatus != CONFIG_OTA_IDLE) {
       config_status(String("Config: device rejected config, status=0x") + String(ackStatus, HEX) + " for " + fanetId);
-      return;
+      return confirmed;
     }
 
     // Confirm to backend only after device confirmed successful application
     if(!confirmConfigTransmission(response.sessionId)) {
       config_status("Config: failed to confirm to backend");
-      return;
+      return confirmed;
     }
 
     config_status("Config: update confirmed for " + fanetId);
+    confirmed = true;
 
     // If the backend reported more pending configs, loop immediately to send them.
     // Add a short pause so the device has time to finish rebooting (it resets after apply).
     if(response.count <= 1) {
       //config_status("Config: all updates complete for " + fanetId);
-      return;
+      return confirmed;
     }
     config_status(String("Config: ") + (response.count - 1) + " more pending, continuing...");
     delay(3000); // device reboots after apply; wait before next send
   }
+  return confirmed;
 }
 
 static String getUniqueDeviceIds(String* deviceIds, size_t maxDevices) {
@@ -419,17 +423,17 @@ void config_gs_try_update(const hwInfoData& info) {
   processConfigUpdate(String(deviceId), 0);
 }
 
-void config_gs_check_device(const String& deviceId, uint32_t nonce) {
+bool config_gs_check_device(const String& deviceId, uint32_t nonce) {
   if(WiFi.status() != WL_CONNECTED) {
-    return;
+    return false;
   }
-  processConfigUpdate(deviceId, nonce);
+  return processConfigUpdate(deviceId, nonce);
 }
 
 #else
 
 void config_gs_begin() {}
 void config_gs_try_update(const hwInfoData& info) { (void)info; }
-void config_gs_check_device(const String& deviceId, uint32_t nonce) { (void)deviceId; (void)nonce; }
+bool config_gs_check_device(const String& deviceId, uint32_t nonce) { (void)deviceId; (void)nonce; return false; }
 
 #endif
