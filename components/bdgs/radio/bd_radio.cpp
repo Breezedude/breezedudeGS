@@ -1150,7 +1150,7 @@ void handle_fanet() {
 
   else if (header->type == FANET_PCK_TYPE_TRACKING) {
     trackingData td;
-    if (unpack_trackingdata(byteArr, &td, radio_phy->getSNR(), radio_phy->getRSSI())) {
+    if (unpack_trackingdata(byteArr, &td, radio_phy->getRSSI(), radio_phy->getSNR())) {
       store_lock();
       int i = storeTrackingData(td);  // sort and get position
       bool publish = (millis() - trackingStore[i].last_send) > 800;
@@ -1176,7 +1176,7 @@ void handle_fanet() {
 
   else if (header->type == FANET_PCK_TYPE_GROUND_TRACKING) {
     trackingData td;
-    if (unpack_ground_trackingdata(byteArr, &td, radio_phy->getSNR(), radio_phy->getRSSI())) {
+    if (unpack_ground_trackingdata(byteArr, &td, radio_phy->getRSSI(), radio_phy->getSNR())) {
       store_lock();
       int i = storeTrackingData(td);
       bool publish = (millis() - trackingStore[i].last_send) > 800;
