@@ -79,6 +79,14 @@ static int ap_client_count();
 static void apply_ap_config();
 static void apply_sta_config();
 
+// Time since a stamp that may lie a moment after 'now': the stamps are forced
+// non-zero with "| 1" and some are set from the event task, so a plain
+// subtraction can wrap to 49 days.
+static uint32_t ms_since(uint32_t now, uint32_t then) {
+  const int32_t diff = (int32_t)(now - then);
+  return diff > 0 ? (uint32_t)diff : 0;
+}
+
 static wifi_ps_type_t idle_power_save() {
   return (s_weak_link && !settings.batteryPowered) ? WIFI_PS_MIN_MODEM : WIFI_PS_MAX_MODEM;
 }
@@ -698,7 +706,7 @@ static void restart_wifi_driver() {
 
 // Returns true when it acted and the normal connect attempt should wait.
 static bool recover_offline_sta(uint32_t now) {
-  const uint32_t offline_ms = now - s_offline_since_ms;
+  const uint32_t offline_ms = ms_since(now, s_offline_since_ms);
   if (offline_ms / 1000 > s_offline_max_s) s_offline_max_s = offline_ms / 1000;
 
   // Somebody is on the SoftAP, most likely fixing the WiFi settings: restarting
@@ -706,7 +714,7 @@ static bool recover_offline_sta(uint32_t now) {
   if (ap_client_count() > 0) return false;
 
   const uint32_t assoc = s_assoc_since_ms;
-  if (assoc && now - assoc >= WIFI_NO_IP_TIMEOUT_MS) {
+  if (assoc && ms_since(now, assoc) >= WIFI_NO_IP_TIMEOUT_MS) {
     s_assoc_since_ms = 0;
     webconsole_print("WiFi associated but no address after 30 s - reconnecting");
     esp_wifi_disconnect();
@@ -722,7 +730,7 @@ static bool recover_offline_sta(uint32_t now) {
   }
 
   const uint32_t since = s_last_driver_restart_ms ? s_last_driver_restart_ms : s_offline_since_ms;
-  if (now - since >= WIFI_DRIVER_RESTART_MS) {
+  if (ms_since(now, since) >= WIFI_DRIVER_RESTART_MS) {
     s_last_driver_restart_ms = now | 1;
     webconsole_print("WiFi offline for 10 min - restarting the WiFi driver");
     restart_wifi_driver();
