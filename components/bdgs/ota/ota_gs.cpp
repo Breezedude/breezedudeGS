@@ -87,6 +87,10 @@ static constexpr uint8_t OTA_ERR_SIZE = 0x82u;
 static constexpr uint8_t OTA_ERR_TIMEOUT = 0x87u;
 static constexpr uint16_t OTA_MAX_CHUNK = 192u;
 static constexpr uint32_t OTA_GS_ACK_TIMEOUT_MS = 4000UL;
+// START handshake: resent this often until the device answers, for at most
+// this long in total (see the handshake in ota_gs_try_update).
+static constexpr uint32_t OTA_GS_START_RETRY_MS = 1500UL;
+static constexpr uint32_t OTA_GS_START_TOTAL_MS = 12000UL;
 static constexpr uint16_t OTA_GS_POST_ACK_DELAY_MS = 35u;
 static constexpr uint16_t OTA_GS_RETRY_BACKOFF_MS = 80u;
 static constexpr uint8_t OTA_GS_CHUNK_MAX_ATTEMPTS = 15u;
@@ -164,6 +168,7 @@ struct OtaAnnouncement {
   uint8_t otaProto = OTA_PROTO;
   uint8_t otaState = 0;
   int rssi = 0;   // RSSI of received announcement packet
+  float snr = 0;  // and its SNR
 };
 
 struct OtaManifest {
@@ -191,6 +196,8 @@ struct OtaAttempt {
   uint32_t downloadMs = 0;  // duration of the firmware download, 0 if not reached
   uint32_t chunksSent = 0;  // chunks accepted by the device
   uint32_t totalChunks = 0;
+  uint8_t startSends = 0;   // START packets sent before the device answered
+  uint32_t startAckMs = 0;  // from the first START to the device's answer, 0 without one
 };
 
 // Last few update decisions per sensor, for the station details in the web UI.
@@ -313,6 +320,7 @@ static bool parseDebugType4(const hwInfoData& info, OtaAnnouncement& ann) {
   ann.otaProto = info.rawAfterBuildDate[9];
   ann.otaState = (info.rawLen >= 11u) ? info.rawAfterBuildDate[10] : 0u;
   ann.rssi = (int)info.rssi;
+  ann.snr = info.snr;
   return true;
 }
 
@@ -1116,6 +1124,14 @@ static void reportOtaResult(const OtaAnnouncement& ann, const OtaManifest& manif
   doc["chunks_sent"] = attempt.chunksSent;
   doc["total_chunks"] = attempt.totalChunks;
   doc["gs_fw"] = fw_version;
+  // Link and handshake details, for the update statistics: how well this
+  // station heard the announcement, how many START packets it took, and
+  // whether FLARM/ADS-L share the radio.
+  doc["ann_rssi"] = ann.rssi;
+  doc["ann_snr"] = roundf(ann.snr * 10.0f) / 10.0f;
+  doc["start_sends"] = attempt.startSends;
+  doc["start_ack_ms"] = attempt.startAckMs;
+  doc["fsk"] = flarm_enabled() || adsl_enabled();
   String body;
   serializeJson(doc, body);
   Serial.println("OTA: result report " + body);
@@ -1262,17 +1278,26 @@ void ota_gs_try_update(const hwInfoData& info) {
   applyRadioMode(true);
   delay(120);
 
+  // The device checks the signature and erases the whole target area before it
+  // answers - several seconds on a SAMD21 - and does not listen meanwhile. So
+  // START goes out again until it answers: a repeat to a device that already
+  // started its session is answered at once and changes nothing (firmware
+  // 1.1.x and later), a repeat after a lost START starts it.
   ota_status("OTA: switching to transfer mode and sending start packet");
-  if(!sendStart(ann, manifest)) {
-    applyRadioMode(false);
-    reportOtaResult(ann, manifest, attempt, "handshake", "start_send_failed");
-    s_busy = false;
-    return;
-  }
-
   OtaAckInfo ackInfo;
-  //ota_status("OTA: waiting for device handshake response");
-  const bool startAcked = waitForAck(ann.nonce, ackInfo, 4000);
+  bool startAcked = false;
+  const uint32_t startBeginMs = millis();
+  while(!startAcked && millis() - startBeginMs < OTA_GS_START_TOTAL_MS) {
+    if(!sendStart(ann, manifest)) {
+      applyRadioMode(false);
+      reportOtaResult(ann, manifest, attempt, "handshake", "start_send_failed");
+      s_busy = false;
+      return;
+    }
+    attempt.startSends++;
+    startAcked = waitForAck(ann.nonce, ackInfo, OTA_GS_START_RETRY_MS);
+  }
+  if(startAcked) attempt.startAckMs = millis() - startBeginMs;
   if(!startAcked || ackInfo.status != OTA_STATE_RX) {
     ota_status("OTA: start handshake not accepted by device");
     sendAbort(ann, OTA_ERR_TIMEOUT);
