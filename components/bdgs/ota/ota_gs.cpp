@@ -363,7 +363,8 @@ static bool queryBackend(const OtaAnnouncement& ann, OtaManifest& manifest, Stri
                      "&nonce=" + String(ann.nonce) +
                      "&versionBcd=" + String(ann.versionBcd) +
                      "&slotCapacityKb=" + String(ann.slotCapacityKb) +
-                     "&rssi=" + String(ann.rssi);
+                     "&rssi=" + String(ann.rssi) +
+                     "&snr=" + String(ann.snr, 1);
 
   //webconsole_print("OTA: Querying backend: " + url);
   //webconsole_print("OTA: Querying backend for updates");
