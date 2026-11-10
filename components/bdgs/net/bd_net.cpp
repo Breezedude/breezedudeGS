@@ -16,6 +16,7 @@
 #include "esp_netif_sntp.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "ota_gs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -30,6 +31,25 @@ static const char* TAG = "net";
 #define WIFI_RETRY_SLOW_MS 60000
 #define SCAN_SETTLE_MS 600
 
+// Recovery ladder for a station that stays offline although it has WiFi
+// credentials. Field reports: a station on a weak link (-90 dBm) stayed offline
+// for hours and came straight back after a power cycle.
+//   associated but no address for 30 s -> drop the association, start over
+//   offline for 10 min (and every 10 min after) -> restart the WiFi driver
+//   offline for 30 min, WiFi worked since boot -> reboot, the remote power cycle
+// The reboot needs an address since boot: a station whose router is gone
+// reboots once and then stays up.
+#define WIFI_NO_IP_TIMEOUT_MS 30000UL
+#define WIFI_DRIVER_RESTART_MS (10UL * 60UL * 1000UL)
+#define WIFI_REBOOT_AFTER_MS (30UL * 60UL * 1000UL)
+// The driver gives up on the AP after this long without a beacon (default 6 s).
+// On a weak link with modem sleep, six seconds of missed beacons are routine.
+#define WIFI_BEACON_TIMEOUT_S 20
+// Below this the link counts as weak: mains powered stations then wake for
+// every DTIM beacon instead of every listen interval.
+#define WIFI_WEAK_RSSI -80
+#define WIFI_GOOD_RSSI -72
+
 static esp_netif_t* s_sta_netif = nullptr;
 static esp_netif_t* s_ap_netif = nullptr;
 static bool s_ap_active = false;
@@ -43,6 +63,48 @@ static TaskHandle_t s_net_task = nullptr;
 static volatile bool s_blocking_connect = false;
 static volatile bool s_last_disconnect_auth_fail = false;
 static volatile bool s_last_disconnect_no_ap = false;
+
+static volatile uint8_t s_last_disconnect_reason = 0;
+static volatile uint32_t s_assoc_since_ms = 0;  // associated, waiting for an address; 0 = not
+static volatile bool s_had_ip_since_boot = false;
+static uint32_t s_offline_since_ms = 0;         // 0 = online
+static uint32_t s_last_driver_restart_ms = 0;
+static uint32_t s_connect_attempts = 0;
+static uint32_t s_driver_restarts = 0;
+static uint32_t s_offline_max_s = 0;
+static bool s_weak_link = false;
+static int s_bulk_transfers = 0;
+
+static int ap_client_count();
+static void apply_ap_config();
+static void apply_sta_config();
+
+static wifi_ps_type_t idle_power_save() {
+  return (s_weak_link && !settings.batteryPowered) ? WIFI_PS_MIN_MODEM : WIFI_PS_MAX_MODEM;
+}
+
+// Settings the driver forgets on esp_wifi_stop().
+static void apply_driver_tuning() {
+  esp_wifi_set_ps(s_bulk_transfers > 0 ? WIFI_PS_NONE : idle_power_save());
+  esp_wifi_set_inactive_time(WIFI_IF_STA, WIFI_BEACON_TIMEOUT_S);
+  // Connect scans: stay longer on each channel than the default 120 ms, a weak
+  // AP is otherwise missed in most passes and the attempt ends as "no AP found".
+  wifi_scan_default_params_t scan = {};
+  scan.scan_time.active.min = 120;
+  scan.scan_time.active.max = 300;
+  scan.scan_time.passive = 300;
+  scan.home_chan_dwell_time = 30;
+  esp_wifi_set_scan_parameters(&scan);
+}
+
+void bd_net_wifi_stats(BdWifiStats* out) {
+  if (!out) return;
+  out->lastDisconnectReason = s_last_disconnect_reason;
+  out->connectAttempts = s_connect_attempts;
+  out->driverRestarts = s_driver_restarts;
+  out->offlineMaxS = s_offline_max_s;
+  out->weakLink = s_weak_link;
+}
 
 // --- outbound HTTP queue ----------------------------------------------------
 struct ForwardQueueItem {
@@ -348,10 +410,15 @@ static void on_wifi_event(void*, esp_event_base_t base, int32_t id, void* data) 
                                       ev->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
                                       ev->reason == WIFI_REASON_HANDSHAKE_TIMEOUT;
         s_last_disconnect_no_ap = ev->reason == WIFI_REASON_NO_AP_FOUND;
+        s_last_disconnect_reason = ev->reason;
+        s_assoc_since_ms = 0;
         ESP_LOGI(TAG, "STA disconnected, reason %d", ev->reason);
         if (s_net_task) xTaskNotifyGive(s_net_task);
         break;
       }
+      case WIFI_EVENT_STA_CONNECTED:
+        s_assoc_since_ms = millis() | 1;
+        break;
       case WIFI_EVENT_SCAN_DONE: {
         // The connect logic scans too; only our own scan is reported.
         if (!s_scan_busy) {
@@ -381,6 +448,8 @@ static void on_wifi_event(void*, esp_event_base_t base, int32_t id, void* data) 
   if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     wifiConnected = true;
     s_connect_errors = 0;
+    s_assoc_since_ms = 0;
+    s_had_ip_since_boot = true;
     bd_diag_note_wifi_reconnect();
     String ip = bd_net_sta_ip();
     ESP_LOGI(TAG, "STA got IP %s", ip.c_str());
@@ -426,6 +495,10 @@ static void apply_sta_config() {
   // DTIM-based modem sleep: this is what keeps the station reachable while the
   // CPU is in light sleep.
   cfg.sta.listen_interval = CONFIG_BDGS_WIFI_LISTEN_INTERVAL;
+  // With several APs of the same name (mesh, repeater) take the strongest, and
+  // try each one twice before moving on.
+  cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+  cfg.sta.failure_retry_cnt = 2;
   esp_wifi_set_config(WIFI_IF_STA, &cfg);
 }
 
@@ -601,14 +674,73 @@ void bd_net_reevaluate() {
   if (s_net_task) xTaskNotifyGive(s_net_task);
 }
 
-static int s_bulk_transfers = 0;
-
 void bd_net_bulk_transfer(bool active) {
   if (active) {
     if (s_bulk_transfers++ == 0) esp_wifi_set_ps(WIFI_PS_NONE);
   } else if (s_bulk_transfers > 0 && --s_bulk_transfers == 0) {
-    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+    esp_wifi_set_ps(idle_power_save());
   }
+}
+
+// Stop and start the driver: clears whatever state a failed association left
+// behind, short of a reboot. The configuration lives in RAM and survives, but
+// is applied again to be sure.
+static void restart_wifi_driver() {
+  s_driver_restarts++;
+  s_assoc_since_ms = 0;
+  esp_wifi_stop();
+  vTaskDelay(pdMS_TO_TICKS(300));
+  if (s_ap_active) apply_ap_config();
+  apply_sta_config();
+  esp_wifi_start();
+  apply_driver_tuning();
+}
+
+// Returns true when it acted and the normal connect attempt should wait.
+static bool recover_offline_sta(uint32_t now) {
+  const uint32_t offline_ms = now - s_offline_since_ms;
+  if (offline_ms / 1000 > s_offline_max_s) s_offline_max_s = offline_ms / 1000;
+
+  // Somebody is on the SoftAP, most likely fixing the WiFi settings: restarting
+  // the driver or the station would throw them out.
+  if (ap_client_count() > 0) return false;
+
+  const uint32_t assoc = s_assoc_since_ms;
+  if (assoc && now - assoc >= WIFI_NO_IP_TIMEOUT_MS) {
+    s_assoc_since_ms = 0;
+    webconsole_print("WiFi associated but no address after 30 s - reconnecting");
+    esp_wifi_disconnect();
+    forceReconnectSTA = true;
+    return true;
+  }
+
+  if (offline_ms >= WIFI_REBOOT_AFTER_MS && s_had_ip_since_boot && !ota_gs_busy()) {
+    ESP_LOGE(TAG, "WiFi offline for 30 min - rebooting");
+    webconsole_print("WiFi offline for 30 min - rebooting");
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
+  }
+
+  const uint32_t since = s_last_driver_restart_ms ? s_last_driver_restart_ms : s_offline_since_ms;
+  if (now - since >= WIFI_DRIVER_RESTART_MS) {
+    s_last_driver_restart_ms = now | 1;
+    webconsole_print("WiFi offline for 10 min - restarting the WiFi driver");
+    restart_wifi_driver();
+    forceReconnectSTA = true;
+    return true;
+  }
+  return false;
+}
+
+// Pick the power save mode from the signal, with hysteresis.
+static void track_link_quality() {
+  const int rssi = bd_net_sta_rssi();
+  if (rssi >= 0) return;
+  const bool weak = s_weak_link ? rssi < WIFI_GOOD_RSSI : rssi <= WIFI_WEAK_RSSI;
+  if (weak == s_weak_link) return;
+  s_weak_link = weak;
+  if (s_bulk_transfers == 0) esp_wifi_set_ps(idle_power_save());
+  ESP_LOGI(TAG, "WiFi link %s (%d dBm)", weak ? "weak" : "good", rssi);
 }
 
 // --- task -------------------------------------------------------------------
@@ -648,7 +780,20 @@ static void net_tick() {
 
   if (!connected && !otaUploadInProgress) {
     wifiConnected = false;
-    if (strlen(settings.wifi_ssid) == 0) return;
+    if (strlen(settings.wifi_ssid) == 0) {
+      s_offline_since_ms = 0;
+      return;
+    }
+
+    const uint32_t now = millis();
+    if (!s_offline_since_ms) {
+      s_offline_since_ms = now | 1;
+      s_last_driver_restart_ms = 0;
+      if (s_had_ip_since_boot) {
+        webconsole_print(String("WiFi connection lost (reason ") + (int)s_last_disconnect_reason + ")");
+      }
+    }
+    if (recover_offline_sta(now)) return;
 
     // After 3 quick retries back off to one attempt per minute, but never stop:
     // a brief router restart must not require a manual reboot of the station.
@@ -656,6 +801,7 @@ static void net_tick() {
     if (forceReconnectSTA || s_last_attempt_ms == 0 ||
         (millis() - s_last_attempt_ms) >= interval) {
       s_last_attempt_ms = millis();
+      s_connect_attempts++;
       if (s_connect_errors < 3) s_connect_errors++;
       forceReconnectSTA = false;
       ESP_LOGI(TAG, "connecting to SSID %s", settings.wifi_ssid);
@@ -667,6 +813,8 @@ static void net_tick() {
 
   if (connected && !otaUploadInProgress) {
     if (!wifiConnected) wifiConnected = true;
+    s_offline_since_ms = 0;
+    track_link_quality();
     update_internet_status();
     bd_fwupdate_check(false);
   }
@@ -723,7 +871,7 @@ void bd_net_start() {
 
   // Modem sleep with DTIM wake-ups: the AP buffers traffic while the station
   // sleeps, so the web UI and the APRS connection survive light sleep.
-  esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+  apply_driver_tuning();
 
   // Runs the HTTP client paths: forward queue, internet check, update check,
   // manifest JSON, web UI download and the firmware OTA itself.

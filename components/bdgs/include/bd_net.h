@@ -16,6 +16,16 @@ String bd_net_ap_ip();
 bool bd_net_ap_active();
 int8_t bd_net_sta_rssi();
 
+// How the uplink has behaved since boot, for the diagnostics report.
+struct BdWifiStats {
+  uint8_t lastDisconnectReason;  // wifi_err_reason_t of the last disconnect, 0 = none
+  uint32_t connectAttempts;
+  uint32_t driverRestarts;       // recoveries by restarting the WiFi driver
+  uint32_t offlineMaxS;          // longest stretch without an address
+  bool weakLink;
+};
+void bd_net_wifi_stats(BdWifiStats* out);
+
 void bd_net_request_sta_reconnect();
 void bd_net_request_ap_restart();
 

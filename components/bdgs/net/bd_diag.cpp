@@ -263,6 +263,13 @@ static String build_report() {
   wifi_ap_record_t ap = {};
   if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) net["channel"] = ap.primary;
   net["reconnects"] = s_reconnects;
+  BdWifiStats wifi = {};
+  bd_net_wifi_stats(&wifi);
+  net["disc_reason"] = wifi.lastDisconnectReason;
+  net["connect_attempts"] = wifi.connectAttempts;
+  net["driver_restarts"] = wifi.driverRestarts;
+  net["offline_max_s"] = wifi.offlineMaxS;
+  net["weak_link"] = wifi.weakLink;
 
   doc["heap"]["free"] = (uint32_t)esp_get_free_heap_size();
   doc["heap"]["min_free"] = (uint32_t)esp_get_minimum_free_heap_size();
