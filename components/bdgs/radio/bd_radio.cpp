@@ -168,6 +168,20 @@ static void irq_pin_setup() {
   gpio_intr_enable((gpio_num_t)BD_PIN_LORA_DIO1);
 }
 
+// RadioLib's begin() and beginFSK() make DIO1 a plain input again (modSetup()
+// calls pinMode()), and pinMode() here also switches the pin's interrupt off.
+// After the first change between FANET and FLARM/ADS-L, DIO1 then raised no
+// interrupt any more: the radio task still found packets, because RadioIrqFlag
+// ::arm() reads the pin level each time the task wakes, but the LoRa OTA waits
+// in a loop that only looks at the flag, and missed every answer of the sensor.
+// The OTA handshake failed on each ground station with FLARM or ADS-L switched
+// on, and light-sleep wake on DIO1 was gone as well.
+static void irq_pin_restore() {
+  gpio_set_intr_type((gpio_num_t)BD_PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
+  gpio_wakeup_enable((gpio_num_t)BD_PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
+  gpio_intr_enable((gpio_num_t)BD_PIN_LORA_DIO1);
+}
+
 // --- radio bring-up ---------------------------------------------------------
 bool init_lora_radio() {
   if (radio_sx1276.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12, 0) == RADIOLIB_ERR_NONE) {
@@ -414,6 +428,7 @@ static bool radio_apply_mode(RadioMode mode) {
       ESP_LOGW(TAG, "LoRa begin failed, code %d", st);
       return false;
     }
+    irq_pin_restore();
     if (lora_module != RADIO_MODULE_SX1276) {
       radio_phy->setOutputPower(22);
       static_cast<SX126x*>(radio_phy)->setRegulatorDCDC();
@@ -445,6 +460,7 @@ static bool radio_apply_mode(RadioMode mode) {
     ESP_LOGW(TAG, "beginFSK failed, code %d", state);
     return false;
   }
+  irq_pin_restore();
 
   if (lora_module != RADIO_MODULE_SX1276) {
     static_cast<SX126x*>(radio_phy)->setRegulatorDCDC();
