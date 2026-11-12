@@ -168,6 +168,12 @@ void bd_diag_note_wifi_reconnect() {
   portEXIT_CRITICAL(&s_mux);
 }
 
+static char s_rolled_back[32] = "";
+
+void bd_diag_note_rollback(const char* version) {
+  strncpy(s_rolled_back, version ? version : "", sizeof(s_rolled_back) - 1);
+}
+
 void bd_diag_request_claim(int sockfd) { s_claim_fd = sockfd; }
 
 BdDiagState bd_diag_state() {
@@ -249,6 +255,7 @@ static String build_report() {
   doc["radio"] = radio_name();
   doc["uptime_s"] = (uint32_t)(millis() / 1000);
   doc["reset_reason"] = reset_reason_id();
+  if (s_rolled_back[0]) doc["rolled_back"] = s_rolled_back;
   doc["interval_s"] = kIntervalS;
 
   JsonObject net = doc["net"].to<JsonObject>();

@@ -30,6 +30,8 @@ void bd_diag_note_adsl();
 void bd_diag_note_upload(bool ok);
 void bd_diag_note_queue_dropped();
 void bd_diag_note_wifi_reconnect();
+// A firmware update that the bootloader rolled back; sent with every report.
+void bd_diag_note_rollback(const char* version);
 
 // From the net task: sends a report when one is due, and a pending link request.
 void bd_diag_tick();

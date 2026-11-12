@@ -203,6 +203,26 @@ static void serial_task(void*) {
 }
 
 // --- boot -------------------------------------------------------------------
+// The bootloader returns to the previous firmware when a new one is reset
+// before it confirmed itself (CONFIG_BDGS_MARK_VALID_AFTER_S). Nothing else
+// tells the user: the station just comes back on the old version. The reset
+// reason seen here is the one that ended the new firmware - but only on the
+// first start after the rollback.
+static void report_rolled_back_update() {
+  const esp_partition_t* bad = esp_ota_get_last_invalid_partition();
+  if (!bad) return;
+  esp_app_desc_t desc = {};
+  if (esp_ota_get_partition_description(bad, &desc) != ESP_OK) return;
+  char line[200];
+  snprintf(line, sizeof(line),
+           "Firmware %s (%s %s) was rolled back to this version: it was reset within %d s of "
+           "starting. Reset reason now: %d",
+           desc.version, desc.date, desc.time, CONFIG_BDGS_MARK_VALID_AFTER_S, (int)esp_reset_reason());
+  ESP_LOGW(TAG, "%s", line);
+  webconsole_print(line);
+  bd_diag_note_rollback(desc.version);
+}
+
 void bd_app_start(void) {
   log_boot_banner();
   init_nvs();
@@ -245,6 +265,7 @@ void bd_app_start(void) {
 
   bd_net_start();
   bool web_ok = bd_web_start();
+  report_rolled_back_update();
   bool radio_ok = bd_radio_start();
   if (!radio_ok) {
     webconsole_print("No LoRa module detected - running as a WiFi-only station");
