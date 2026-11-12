@@ -80,6 +80,16 @@ void load_preferences() {
       ESP_LOGW(TAG, "partial settings load (got %u, current size %u) - defaults kept for new fields",
                (unsigned)loaded, (unsigned)sizeof(settings));
     }
+    // Blobs from before FLARM/ADS-L (Arduino 0.6.x, 372 bytes) end in two
+    // padding bytes, which now hold receiveFlarm and flarmDutyProfile. Whatever
+    // they contain, an upgraded station starts with FANET only: listening to
+    // FLARM or ADS-L costs FANET reception and has to be a deliberate choice.
+    if (loaded > 0 && loaded <= offsetof(Settings, receiveAdsl)) {
+      settings.receiveFlarm = false;
+      settings.flarmDutyProfile = 0;
+      settings.receiveAdsl = false;
+      settings.receiveFanet = true;
+    }
     settings.updateBranch[sizeof(settings.updateBranch) - 1] = '\0';
     // Also turns "alpha" back into "stable" when a regular build replaces an
     // alpha build: only alpha builds may follow the alpha channel.

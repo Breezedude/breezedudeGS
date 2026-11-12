@@ -1519,6 +1519,7 @@ function updateFormUi() {
   const fsk = readField('receiveFlarm') || readField('receiveAdsl');
   $('fanetOffWarning').hidden = fanet;
   $('dutyProfileField').hidden = !(fanet && fsk);
+  $('fskCostWarning').hidden = !(fanet && fsk);
 
   const battery = readField('batteryPowered');
   $('batteryFields').hidden = !battery;

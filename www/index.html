@@ -403,6 +403,7 @@
         <input type="checkbox" id="receiveAdsl">
         <span class="text">ADS-L<small>EASA ADS-L 4 SRD-860, M band</small></span>
       </label>
+      <p class="hint warn indent" id="fskCostWarning" hidden>The radio can only listen to one protocol at a time. While it listens for FLARM or ADS-L it misses FANET packets, so weather stations and FANET trackers are received noticeably worse. Only switch this on if you need the air traffic.</p>
       <div class="field indent" id="dutyProfileField">
         <label for="flarmDutyProfile">Radio time for FLARM / ADS-L</label>
         <select id="flarmDutyProfile">
