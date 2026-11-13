@@ -133,6 +133,14 @@ void bd_diag_note_packet(uint8_t vid, uint16_t addr, uint8_t type, float rssi, f
   if (type == FANET_PCK_TYPE_WEATHER) s_weather_rx++;
   if (type == FANET_PCK_TYPE_HW_INFO) s_hwinfo_rx++;
   if (type == FANET_PCK_TYPE_TRACKING || type == FANET_PCK_TYPE_GROUND_TRACKING) s_tracking_rx++;
+  // Only packets whose address is their sender's, the same set as the packet
+  // history. An ACK carries the address of the station it answers: another
+  // ground station's hourly OTA "no update" ACK to a wind station would list
+  // that wind station as heard, with the other ground station's RSSI and SNR.
+  if (!bd_repeat_type_tracked(type)) {
+    portEXIT_CRITICAL(&s_mux);
+    return;
+  }
   StationHeard* s = nullptr;
   for (int i = 0; i < s_station_count && !s; i++) {
     if (s_stations[i].vid == vid && s_stations[i].addr == addr) s = &s_stations[i];

@@ -86,7 +86,7 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // OTA and acknowledgement traffic never carries the forward bit and says
 // nothing about a repeater.
-static bool type_tracked(uint8_t type) {
+bool bd_repeat_type_tracked(uint8_t type) {
   return type == FANET_PCK_TYPE_TRACKING || type == FANET_PCK_TYPE_NAME ||
          type == FANET_PCK_TYPE_WEATHER || type == FANET_PCK_TYPE_GROUND_TRACKING ||
          type == FANET_PCK_TYPE_HW_INFO;
@@ -303,7 +303,7 @@ static void note_name(uint8_t vid, uint16_t addr, const uint8_t* text, size_t le
 void bd_repeat_note(const uint8_t* frame, size_t len, float snr, float rssi) {
   if (len < 4) return;
   const uint8_t type = frame[0] & 0x3F;
-  if (!type_tracked(type)) return;
+  if (!bd_repeat_type_tracked(type)) return;
   const bool forward = frame[0] & 0x40;
   const uint8_t vid = frame[1];
   const uint16_t addr = frame[2] | (frame[3] << 8);

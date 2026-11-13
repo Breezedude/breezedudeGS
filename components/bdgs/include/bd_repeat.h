@@ -14,6 +14,11 @@ class BdJsonOut;
 // A FANET frame that passed its CRC. Radio task only.
 void bd_repeat_note(const uint8_t* frame, size_t len, float snr, float rssi);
 
+// Packet types whose header address is the sender's own: tracking, name,
+// weather, ground tracking and HW info. Not an ACK, which carries the address
+// of the station it answers.
+bool bd_repeat_type_tracked(uint8_t type);
+
 // Closes packets whose copy window is over and reports them. Radio task only.
 void bd_repeat_tick();
 
