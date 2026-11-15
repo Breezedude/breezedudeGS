@@ -12,6 +12,16 @@ class BdJsonOut;
 void ota_gs_begin();
 void ota_gs_try_update(const hwInfoData& info);
 
+// Every HW info packet of a sensor: learns when its next OTA announcement is
+// due (type 2 comes hourly, the first 10 minutes after boot) and marks the
+// sensor for a firmware preload. Radio task.
+void ota_gs_note_hwinfo(const hwInfoData& info);
+
+// Asks the backend which image the sensor's next update will need and puts it
+// into the flash store, so the update starts as soon as the sensor announces
+// itself instead of after a download it does not wait for. Net task.
+void ota_gs_preload_tick();
+
 // The last update decisions per sensor ("up_to_date", "start_not_acked", ...)
 // as JSON array items {"id":"BD793C","entries":[...]},..., oldest entry first.
 void ota_gs_history_write(BdJsonOut& out);

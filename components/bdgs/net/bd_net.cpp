@@ -837,6 +837,7 @@ static void net_task(void*) {
     net_tick();
     process_forward_queue();
     bd_diag_tick();
+    ota_gs_preload_tick();
     // Work arrives as a notification. The ceiling only paces the reconnect
     // logic, so it is short while disconnected and relaxed once online.
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(bd_net_sta_connected() ? 5000 : 1000));

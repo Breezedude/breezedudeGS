@@ -11,13 +11,18 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <RadioLib.h>
+#include <algorithm>
 #include <memory>
 #include <new>
 #include <vector>
 #include <math.h>
 
 #include "helper.h"
+#include "bd_net.h"
+#include "bd_power.h"
+#include "bd_state.h"
 #include "bd_web.h"
+#include "freertos/semphr.h"
 
 // ESP-IDF port: receivedFlag is no longer a plain bool. The DIO1 line doubles
 // as the light-sleep wake source, which only works level triggered, so the flag
@@ -36,6 +41,9 @@ extern String fw_version;
 #endif
 #ifndef OTA_GS_STATS_URL
   #define OTA_GS_STATS_URL "http://fanet.breezedude.de/api/ota/stats"
+#endif
+#ifndef OTA_GS_PRELOAD_URL
+  #define OTA_GS_PRELOAD_URL "http://fanet.breezedude.de/api/ota/preload"
 #endif
 #ifndef OTA_GS_RESULT_URL
   #define OTA_GS_RESULT_URL "http://fanet.breezedude.de/api/ota/result"
@@ -213,13 +221,54 @@ struct OtaHistoryEntry {
   char detail[32];
 };
 
+// The sensor sends its OTA announcement (HW info debug type 2) once an hour,
+// the first 10 minutes after boot, and only listens for an offer right after
+// it. The other HW info types come every 10 to 60 minutes.
+static constexpr uint32_t OTA_ANNOUNCE_PERIOD_S = 3600UL;
+static constexpr uint32_t OTA_FIRST_ANNOUNCE_S = 600UL;
+// A predicted window counts as missed this long after its time.
+static constexpr uint32_t OTA_WINDOW_GRACE_S = 300UL;
+// The uptime field wraps after 65536 minutes.
+static constexpr uint32_t OTA_UPTIME_WRAP_S = 65536UL * 60UL;
+// Ask the backend about a sensor's next firmware at most this often.
+static constexpr uint32_t OTA_PRELOAD_RECHECK_MS = 3600000UL;
+// Same limits as the backend's offer (routes_ota.js): no point in fetching an
+// image for a sensor this station hears too weakly to update.
+static constexpr int OTA_PRELOAD_MIN_RSSI = -115;
+static constexpr float OTA_PRELOAD_MIN_SNR = -8.0f;
+
+enum OtaPreloadState : uint8_t {
+  PRELOAD_NONE = 0,     // not asked yet
+  PRELOAD_NOT_DUE,      // backend: no update for this sensor
+  PRELOAD_READY,        // image in the flash store
+  PRELOAD_FAILED,       // backend unreachable or download failed
+};
+
 struct OtaHistory {
+  bool used;
   uint8_t vendor;
   uint16_t address;
   uint8_t count;
   uint8_t head;  // next entry to write
   uint32_t lastUse;
   OtaHistoryEntry entries[OTA_HISTORY_ENTRIES];
+
+  // From the HW info packets, see ota_gs_note_hwinfo(). Times are Unix seconds.
+  uint16_t versionBcd;       // from the last announcement, 0 = none heard
+  uint32_t bootEpoch;        // now - uptime, 0 = unknown
+  uint32_t lastAnnounce;     // last announcement heard here
+  uint32_t nextWindow;       // predicted next announcement, 0 = unknown
+  uint8_t missedWindows;     // predicted windows without an announcement, in a row
+  uint32_t typeSeen[5];      // last packet per debug type 1-4 (index 0 unused)
+  int16_t rssi;
+  int16_t snr10;
+
+  uint8_t preloadState;
+  bool preloadWanted;
+  uint16_t preloadTargetBcd;
+  uint32_t preloadCheckedMs;  // millis() of the last backend answer, 0 = never
+  uint32_t preloadAt;         // Unix time of that answer
+  char preloadDetail[32];
 };
 
 static OtaHistory s_history[OTA_HISTORY_DEVICES];
@@ -645,13 +694,38 @@ static void notifyNoUpdate(const OtaAnnouncement& ann) {
 // there, else it is downloaded into it. During the radio transfer it is read
 // from flash, so neither RAM nor WiFi matter then. `cached` tells which.
 // On failure `error` holds a short reason for the result report.
+// One writer at a time on the flash store: the preload in the net task or the
+// update in the radio task.
+static SemaphoreHandle_t s_store_mutex = nullptr;
+
+static bool storeTryLock(TickType_t wait) {
+  if(!s_store_mutex) {
+    return false;
+  }
+  return xSemaphoreTake(s_store_mutex, wait) == pdTRUE;
+}
+
+static void storeUnlock() { xSemaphoreGive(s_store_mutex); }
+
+static bool downloadFirmwareImage(const OtaManifest& manifest, BdFwImage& image, String& error);
+
 static bool obtainFirmwareImage(const OtaManifest& manifest, BdFwImage& image, bool& cached, String& error) {
   cached = bd_fwstore_find(manifest.imageSha256Raw, manifest.imageSize, &image);
   if(cached) {
     ota_status(String("OTA: firmware ") + manifest.fileName + " from the flash store");
     return true;
   }
+  // WiFi power save cuts the download to ~12 KB/s: 10-30 s for an image, while
+  // the sensor waits 5-15 s for the answer to its announcement.
+  bd_power_hold_awake(true);
+  bd_net_bulk_transfer(true);
+  const bool ok = downloadFirmwareImage(manifest, image, error);
+  bd_net_bulk_transfer(false);
+  bd_power_hold_awake(false);
+  return ok;
+}
 
+static bool downloadFirmwareImage(const OtaManifest& manifest, BdFwImage& image, String& error) {
   // Before the download, which would be for nothing.
   BdFwWriter writer;
   if(!bd_fwstore_begin(manifest.imageSize, &writer)) {
@@ -1011,11 +1085,38 @@ static void postOtaStats(const OtaAnnouncement& ann, const OtaManifest& manifest
   http.end();
 }
 
+static const char* preloadStateText(uint8_t state) {
+  switch(state) {
+    case PRELOAD_NOT_DUE: return "not_due";
+    case PRELOAD_READY: return "ready";
+    case PRELOAD_FAILED: return "failed";
+    default: return "none";
+  }
+}
+
 static String historyDeviceJson(const OtaHistory& h) {
   JsonDocument doc;
   char id[8];
   snprintf(id, sizeof(id), "%02X%04X", h.vendor, h.address);
   doc["id"] = id;
+
+  // When the sensor will listen for an update next, as far as its packets tell.
+  JsonObject window = doc["window"].to<JsonObject>();
+  if(h.versionBcd) window["version"] = formatVersionBcd(h.versionBcd);
+  if(h.lastAnnounce) window["last"] = h.lastAnnounce;
+  if(h.nextWindow) window["next"] = h.nextWindow;
+  window["from_boot"] = h.nextWindow && !h.lastAnnounce;
+  window["missed"] = h.missedWindows;
+  JsonObject types = window["types"].to<JsonObject>();
+  for(uint8_t t = 1; t <= 4; ++t) {
+    if(h.typeSeen[t]) types[String(t)] = h.typeSeen[t];
+  }
+  JsonObject preload = doc["preload"].to<JsonObject>();
+  preload["state"] = preloadStateText(h.preloadState);
+  if(h.preloadTargetBcd) preload["target"] = formatVersionBcd(h.preloadTargetBcd);
+  if(h.preloadAt) preload["at"] = h.preloadAt;
+  if(h.preloadDetail[0]) preload["detail"] = h.preloadDetail;
+
   JsonArray entries = doc["entries"].to<JsonArray>();
   for(uint8_t i = 0; i < h.count; ++i) {
     const OtaHistoryEntry& e = h.entries[(h.head + OTA_HISTORY_ENTRIES - h.count + i) % OTA_HISTORY_ENTRIES];
@@ -1035,29 +1136,37 @@ static String historyDeviceJson(const OtaHistory& h) {
   return out;
 }
 
+// The sensor's slot, taken over from the one unused longest when it has none.
+// Call with s_history_lock held.
+static OtaHistory* historySlotLocked(uint8_t vendor, uint16_t address) {
+  OtaHistory* oldest = &s_history[0];
+  for(OtaHistory& h : s_history) {
+    if(h.used && h.vendor == vendor && h.address == address) {
+      return &h;
+    }
+    if(!h.used || (oldest->used && (int32_t)(h.lastUse - oldest->lastUse) < 0)) {
+      oldest = &h;
+    }
+  }
+  memset(oldest, 0, sizeof(*oldest));
+  oldest->used = true;
+  oldest->vendor = vendor;
+  oldest->address = address;
+  oldest->lastUse = millis();
+  return oldest;
+}
+
+static void broadcastHistory(const OtaHistory& snapshot) {
+  bd_ws_broadcast("{\"ota_history\":[" + historyDeviceJson(snapshot) + "]}");
+}
+
 // Records one update decision for the station details and pushes the sensor's
 // updated history to open web UIs.
 static void recordOtaHistory(const OtaAnnouncement& ann, uint16_t toBcd, const char* outcome,
                              const String& detail = String()) {
   OtaHistory snapshot;
   portENTER_CRITICAL(&s_history_lock);
-  OtaHistory* slot = nullptr;
-  OtaHistory* oldest = &s_history[0];
-  for(OtaHistory& h : s_history) {
-    if(h.count && h.vendor == ann.vendor && h.address == ann.address) {
-      slot = &h;
-      break;
-    }
-    if(!h.count || h.lastUse < oldest->lastUse) {
-      oldest = &h;
-    }
-  }
-  if(!slot) {
-    slot = oldest;
-    memset(slot, 0, sizeof(*slot));
-    slot->vendor = ann.vendor;
-    slot->address = ann.address;
-  }
+  OtaHistory* slot = historySlotLocked(ann.vendor, ann.address);
   OtaHistoryEntry& e = slot->entries[slot->head];
   e.ts = (uint32_t)time(nullptr);
   e.fromBcd = ann.versionBcd;
@@ -1072,7 +1181,7 @@ static void recordOtaHistory(const OtaAnnouncement& ann, uint16_t toBcd, const c
   snapshot = *slot;
   portEXIT_CRITICAL(&s_history_lock);
 
-  bd_ws_broadcast("{\"ota_history\":[" + historyDeviceJson(snapshot) + "]}");
+  broadcastHistory(snapshot);
 }
 
 bool ota_gs_busy() { return s_busy; }
@@ -1084,7 +1193,7 @@ void ota_gs_history_write(BdJsonOut& out) {
     portENTER_CRITICAL(&s_history_lock);
     h = s_history[i];
     portEXIT_CRITICAL(&s_history_lock);
-    if(!h.count) {
+    if(!h.used) {
       continue;
     }
     if(!first) {
@@ -1156,6 +1265,216 @@ static void reportOtaResult(const OtaAnnouncement& ann, const OtaManifest& manif
 
 void ota_gs_begin() {
   s_busy = false;
+  if(!s_store_mutex) {
+    s_store_mutex = xSemaphoreCreateMutex();
+  }
+}
+
+// Next announcement after `now`, from the last one heard or else from the boot
+// time. 0 when neither is known.
+static uint32_t predictWindow(const OtaHistory& h, uint32_t now) {
+  uint32_t base;
+  if(h.lastAnnounce) {
+    base = h.lastAnnounce + OTA_ANNOUNCE_PERIOD_S;
+  } else if(h.bootEpoch) {
+    base = h.bootEpoch + OTA_FIRST_ANNOUNCE_S;
+  } else {
+    return 0;
+  }
+  if(base + OTA_WINDOW_GRACE_S >= now) {
+    return base;
+  }
+  const uint32_t periods = (now - OTA_WINDOW_GRACE_S - base) / OTA_ANNOUNCE_PERIOD_S + 1u;
+  return base + periods * OTA_ANNOUNCE_PERIOD_S;
+}
+
+// A boot time within two minutes of the stored one, or off by whole uptime
+// wraps, is the same boot (the uptime has minute resolution).
+static bool sameBoot(uint32_t a, uint32_t b) {
+  const uint32_t d = a > b ? a - b : b - a;
+  const uint32_t r = d % OTA_UPTIME_WRAP_S;
+  return r <= 120u || OTA_UPTIME_WRAP_S - r <= 120u;
+}
+
+void ota_gs_note_hwinfo(const hwInfoData& info) {
+  if(info.vid == 0 || !info.hasSubtypeBuildDate || info.rawLen == 0) {
+    return;
+  }
+  const uint32_t now = (uint32_t)time(nullptr);
+  if(now < 1700000000UL) {
+    return;  // no clock yet, nothing to predict with
+  }
+  const uint8_t type = info.rawAfterBuildDate[0];
+
+  OtaHistory snapshot;
+  portENTER_CRITICAL(&s_history_lock);
+  OtaHistory* h = historySlotLocked(info.vid, info.fanet_id);
+  h->lastUse = millis();
+  if(type >= 1 && type <= 4) {
+    h->typeSeen[type] = now;
+  }
+  h->rssi = (int16_t)info.rssi;
+  h->snr10 = (int16_t)lroundf(info.snr * 10.0f);
+
+  if(info.hasUptime) {
+    const uint32_t boot = now - (uint32_t)info.uptimeMinutes * 60u;
+    if(h->bootEpoch && !sameBoot(boot, h->bootEpoch)) {
+      // Restarted: the hourly rhythm starts over 10 minutes after boot.
+      h->lastAnnounce = 0;
+      h->nextWindow = 0;
+      h->missedWindows = 0;
+    }
+    if(!h->bootEpoch || !sameBoot(boot, h->bootEpoch)) {
+      h->bootEpoch = boot;
+    }
+  }
+
+  if(type == OTA_DEBUG_TYPE && info.rawLen >= 3u) {
+    const uint16_t version = readLe16(&info.rawAfterBuildDate[1]);
+    if(version != h->versionBcd) {
+      h->preloadCheckedMs = 0;  // a new version may need a different image
+    }
+    h->versionBcd = version;
+    h->lastAnnounce = now;
+    h->missedWindows = 0;
+  } else if(h->nextWindow && now > h->nextWindow + OTA_WINDOW_GRACE_S) {
+    const uint32_t passed = (now - OTA_WINDOW_GRACE_S - h->nextWindow) / OTA_ANNOUNCE_PERIOD_S + 1u;
+    h->missedWindows = (uint8_t)std::min<uint32_t>(255u, h->missedWindows + passed);
+  }
+  h->nextWindow = predictWindow(*h, now);
+
+  // Fetch the image the backend will offer before the sensor asks for it.
+  const bool linkOk = info.rssi >= OTA_PRELOAD_MIN_RSSI && info.snr >= OTA_PRELOAD_MIN_SNR;
+  if(linkOk && (h->preloadCheckedMs == 0 || millis() - h->preloadCheckedMs >= OTA_PRELOAD_RECHECK_MS)) {
+    h->preloadWanted = true;
+  }
+  const bool wanted = h->preloadWanted;
+  snapshot = *h;
+  portEXIT_CRITICAL(&s_history_lock);
+
+  broadcastHistory(snapshot);
+  if(wanted) {
+    bd_net_reevaluate();
+  }
+}
+
+// GET <preload>?vendor&address[&versionBcd]: the image the next /check would
+// offer this sensor, without signature or arbitration. False if the backend
+// was not reached or did not answer usefully; `error` says why.
+static bool queryPreload(uint8_t vendor, uint16_t address, uint16_t versionBcd, OtaManifest& manifest,
+                         String& error) {
+  String url = String(OTA_GS_PRELOAD_URL) + "?vendor=" + String(vendor) + "&address=" + String(address);
+  if(versionBcd) {
+    url += "&versionBcd=" + String(versionBcd);
+  }
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(8000);
+  if(!http.begin(client, url)) {
+    error = "begin failed";
+    return false;
+  }
+  http.addHeader("ID", settings.deviceName);
+  const int code = http.GET();
+  if(code != HTTP_CODE_OK) {
+    error = code > 0 ? String("HTTP ") + code : String("no answer");
+    http.end();
+    return false;
+  }
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, http.getString());
+  http.end();
+  if(err) {
+    error = "bad JSON";
+    return false;
+  }
+  manifest.available = doc["available"] | false;
+  manifest.noUpdateReason = (const char*)(doc["reason"] | "");
+  if(!manifest.available) {
+    return true;
+  }
+  manifest.firmwareUrl = (const char*)(doc["firmwareUrl"] | "");
+  manifest.fileName = (const char*)(doc["fileName"] | "");
+  manifest.targetVersionBcd = doc["targetVersionBcd"] | (uint16_t)0u;
+  manifest.imageSize = doc["imageSize"] | 0u;
+  manifest.imageSha256 = (const char*)(doc["imageSha256"] | "");
+  if(manifest.firmwareUrl.isEmpty() || manifest.imageSize == 0u ||
+     !parseHexBytes(manifest.imageSha256, manifest.imageSha256Raw, sizeof(manifest.imageSha256Raw))) {
+    error = "manifest incomplete";
+    manifest.available = false;
+    return false;
+  }
+  return true;
+}
+
+void ota_gs_preload_tick() {
+  if(!s_store_mutex || s_busy || otaUploadInProgress || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  // One sensor per call; the net task comes back within seconds.
+  uint8_t vendor = 0;
+  uint16_t address = 0;
+  uint16_t versionBcd = 0;
+  bool found = false;
+  portENTER_CRITICAL(&s_history_lock);
+  for(OtaHistory& h : s_history) {
+    if(h.used && h.preloadWanted) {
+      h.preloadWanted = false;
+      vendor = h.vendor;
+      address = h.address;
+      versionBcd = h.versionBcd;
+      found = true;
+      break;
+    }
+  }
+  portEXIT_CRITICAL(&s_history_lock);
+  if(!found) {
+    return;
+  }
+
+  char deviceId[8];
+  snprintf(deviceId, sizeof(deviceId), "%02X%04X", vendor, address);
+  OtaManifest manifest;
+  String error;
+  uint8_t state = PRELOAD_FAILED;
+  String detail;
+  if(!queryPreload(vendor, address, versionBcd, manifest, error)) {
+    detail = error;
+  } else if(!manifest.available) {
+    state = PRELOAD_NOT_DUE;
+    detail = manifest.noUpdateReason;
+  } else if(!storeTryLock(0)) {
+    // The radio task is updating a sensor; try again with the next packet.
+    portENTER_CRITICAL(&s_history_lock);
+    historySlotLocked(vendor, address)->preloadWanted = true;
+    portEXIT_CRITICAL(&s_history_lock);
+    return;
+  } else {
+    BdFwImage image;
+    bool cached = false;
+    if(obtainFirmwareImage(manifest, image, cached, error)) {
+      state = PRELOAD_READY;
+      if(!cached) {
+        webconsole_print(String("OTA: firmware ") + manifest.fileName + " preloaded for " + deviceId);
+      }
+    } else {
+      detail = error;
+    }
+    storeUnlock();
+  }
+
+  OtaHistory snapshot;
+  portENTER_CRITICAL(&s_history_lock);
+  OtaHistory* h = historySlotLocked(vendor, address);
+  h->preloadState = state;
+  h->preloadTargetBcd = manifest.available ? manifest.targetVersionBcd : 0;
+  h->preloadCheckedMs = millis() | 1u;
+  h->preloadAt = (uint32_t)time(nullptr);
+  strlcpy(h->preloadDetail, detail.c_str(), sizeof(h->preloadDetail));
+  snapshot = *h;
+  portEXIT_CRITICAL(&s_history_lock);
+  broadcastHistory(snapshot);
 }
 
 void ota_gs_try_update(const hwInfoData& info) {
@@ -1257,9 +1576,25 @@ void ota_gs_try_update(const hwInfoData& info) {
 
   BdFwImage firmwareImage;
   bool cached = false;
+  // A preload holding the store is fetching this or another image right now;
+  // waiting for it would miss the sensor's window anyway.
+  if(!storeTryLock(0)) {
+    ota_status("OTA: firmware is being preloaded, the update follows with the next announcement");
+    reportOtaResult(ann, manifest, attempt, "download", "preload_busy");
+    s_busy = false;
+    return;
+  }
   const uint32_t downloadStartMs = millis();
   const bool downloaded = obtainFirmwareImage(manifest, firmwareImage, cached, error);
+  storeUnlock();
   attempt.downloadMs = cached ? 0 : millis() - downloadStartMs;
+  if(downloaded) {
+    portENTER_CRITICAL(&s_history_lock);
+    OtaHistory* slot = historySlotLocked(ann.vendor, ann.address);
+    slot->preloadState = PRELOAD_READY;
+    slot->preloadTargetBcd = manifest.targetVersionBcd;
+    portEXIT_CRITICAL(&s_history_lock);
+  }
   if(!downloaded) {
     ota_status("OTA: firmware preload failed, aborting");
     reportOtaResult(ann, manifest, attempt, "download", "download_failed", error);
@@ -1377,6 +1712,8 @@ void ota_gs_try_update(const hwInfoData& info) {
 
 void ota_gs_begin() {}
 void ota_gs_try_update(const hwInfoData& info) { (void)info; }
+void ota_gs_note_hwinfo(const hwInfoData& info) { (void)info; }
+void ota_gs_preload_tick() {}
 void ota_gs_history_write(BdJsonOut& out) { (void)out; }
 bool ota_gs_busy() { return false; }
 

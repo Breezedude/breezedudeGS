@@ -100,6 +100,7 @@ const state = {
   tracking: new Map(),    // id -> tracker record
   hwinfo: new Map(),      // id -> merged decoded HW info
   otaHistory: new Map(),  // id -> [{ts, from, to, outcome, detail}]
+  otaWindow: new Map(),   // id -> {window: {...}, preload: {...}} from the station
   repeatSources: new Map(),  // id -> packets per reception kind
   repeatEvents: [],          // newest first
   repeatWindowMin: 15,
@@ -1094,6 +1095,10 @@ function onHwInfo(hi) {
   // tNewestHwInfo covers all packets of the station, tLastMsg only this one.
   const packetTs = Number(hi.tLastMsg) || 0;
   if (decoded.repeater_mode !== undefined) merged.repeaterReport = packetTs > 1e9 ? packetTs * 1000 : Date.now();
+  if (Array.isArray(hi.rawBytes) && hi.rawBytes.length && packetTs >= (prev.lastTypeAt || 0)) {
+    merged.lastType = Number(hi.rawBytes[0]) & 0xff;
+    merged.lastTypeAt = packetTs;
+  }
   if (hi.buildYear && hi.buildMonth && hi.buildDay) {
     merged.buildDate = `${hi.buildYear}-${String(hi.buildMonth).padStart(2, '0')}-${String(hi.buildDay).padStart(2, '0')}` +
       (hi.isDevelopmentBuild ? ' (dev)' : '');
@@ -1117,6 +1122,7 @@ function onHwInfo(hi) {
 
 function onOtaHistory(h) {
   state.otaHistory.set(h.id, h.entries || []);
+  if (h.window || h.preload) state.otaWindow.set(h.id, { window: h.window || {}, preload: h.preload || {} });
   if (state.open.has(h.id)) renderWeather(true);
 }
 
@@ -1250,7 +1256,54 @@ const OTA_OUTCOME_TEXT = {
   finish_send_failed: ['Finish not sent', 'bad'],
   finish_not_ready: ['Finish not confirmed', 'bad'],
   finish_rejected: ['Sensor rejected the image', 'bad'],
+  preload_busy: ['Firmware still loading', 'warn'],
 };
+
+// HW info debug types (breezedude_WindSensor doc/hwinfo-protocol.md).
+const HW_TYPE_TEXT = { 1: 'status', 2: 'OTA', 3: 'config', 4: 'repeater' };
+
+function clockText(unixSeconds) {
+  return new Date(unixSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// When the sensor listens for an update next: it announces itself once an hour
+// (HW info type 2) and only listens right after that.
+function otaWindowPairs(id) {
+  const info = state.otaWindow.get(id);
+  if (!info) return [];
+  const w = info.window || {};
+  const p = info.preload || {};
+  const now = Date.now() / 1000;
+  let next = null;
+  if (w.next) {
+    const basis = w.from_boot ? ', estimated from the uptime' : '';
+    next = w.next >= now
+      ? `≈ ${clockText(w.next)} (in ${durationText(w.next - now)}${basis})`
+      : `≈ ${clockText(w.next)} (${durationText(now - w.next)} ago, not heard yet${basis})`;
+  }
+  const PRELOAD_TEXT = {
+    ready: () => `ready${p.target ? ' · ' + esc(p.target) : ''}`,
+    not_due: () => 'no update due',
+    failed: () => `failed${p.detail ? ' · ' + esc(p.detail) : ''}`,
+  };
+  const preload = PRELOAD_TEXT[p.state]
+    ? PRELOAD_TEXT[p.state]() + (p.at ? ` <span class="muted">(${clockText(p.at)})</span>` : '')
+    : null;
+  return [
+    ['Last announcement', w.last ? `${dateTimeText(w.last)}${w.version ? ' · ' + esc(w.version) : ''}` : null],
+    ['Next update window', next],
+    ['Missed windows', w.missed ? `${w.missed} in a row` : null],
+    ['Firmware preload', preload],
+  ];
+}
+
+function hwTypesText(id) {
+  const info = state.otaWindow.get(id);
+  const types = (info && info.window && info.window.types) || {};
+  const parts = Object.keys(types).sort().map((t) =>
+    `${t} ${HW_TYPE_TEXT[t] || '?'} ${clockText(types[t])}`);
+  return parts.length ? esc(parts.join(' · ')) : null;
+}
 
 function kvHtml(pairs) {
   const items = pairs.filter(([, v]) => v !== undefined && v !== null && v !== '' && v !== '-');
@@ -1285,7 +1338,9 @@ function stationDetailHtml(r) {
     ['Bootloader', hw.bootloader ? esc(hw.bootloader) : null],
     ['Active slot', hw.ota_slot || null],
     ['Uptime', uptime],
-    ['Last HW info', hw.newest ? dateTimeText(hw.newest) : null],
+    ['Last HW info', hw.newest ? dateTimeText(hw.newest) +
+      (hw.lastType ? ` · type ${hw.lastType} ${HW_TYPE_TEXT[hw.lastType] || ''}` : '') : null],
+    ['HW info types', hwTypesText(r.id)],
   ]);
 
   const power = kvHtml([
@@ -1315,7 +1370,9 @@ function stationDetailHtml(r) {
   const radio = kvHtml(radioPairs);
 
   const history = state.otaHistory.get(r.id) || [];
-  const updates = history.length
+  const windowPairs = otaWindowPairs(r.id).filter(([, v]) => v);
+  const windowHtml = windowPairs.length ? kvHtml(windowPairs) : '';
+  const updates = windowHtml + (history.length
     ? `<ul class="timeline">${history.slice().reverse().map((e) => {
         const [text, cls] = OTA_OUTCOME_TEXT[e.outcome] || [e.outcome, ''];
         const versions = e.to && e.outcome !== 'no_update' ? `${esc(e.from)} → ${esc(e.to)}` : esc(e.from);
@@ -1325,7 +1382,7 @@ function stationDetailHtml(r) {
           <span class="what"><span class="tag ${cls}">${esc(text)}</span></span>
           <span class="why">${versions}${detail}</span></li>`;
       }).join('')}</ul>`
-    : '<p class="muted" style="margin:0">No update request since the station started.</p>';
+    : '<p class="muted" style="margin:0">No update request since the station started.</p>');
 
   return `<div class="detail-grid">
     <div class="detail-box"><h3>Weather</h3>${weather}</div>

@@ -1153,6 +1153,7 @@ void handle_fanet() {
         if (wifiConnected && settings.sendBreezedude) {
           send_hwinfo_to_frontend(&hi);
         }
+        ota_gs_note_hwinfo(hi);
         // Only HW_INFO type 2 guarantees the sender remains in RX mode afterwards.
         if (hi.rawAfterBuildDate[0] == 2) {
           ota_gs_try_update(hi);
