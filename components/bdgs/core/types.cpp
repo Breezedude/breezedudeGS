@@ -394,6 +394,7 @@ bool unpack_ground_trackingdata(uint8_t *buffer, trackingData *data, int rssi, i
         lon_raw |= 0xFF000000;
     data->lon = (float)lon_raw / 46603.0f;
     data->state = packet->type;
+    data->onlineTracking = packet->track_online;
     data->climb = 0;
     data->heading = 0;
     data->aircraftType = acft_Other;

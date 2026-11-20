@@ -1008,6 +1008,25 @@ static bool mode_is_adsl(RadioMode) { return false; }
 
 #endif  // CONFIG_BDGS_ENABLE_FSK_RX
 
+// Ground positions go to OGN at most once a minute per sender.
+static bool ground_aprs_due(uint8_t vid, uint16_t addr) {
+  static const uint32_t kIntervalMs = 60000;
+  struct Slot { uint8_t vid; uint16_t addr; uint32_t lastMs; };
+  static Slot slots[16] = {};
+  const uint32_t now = millis();
+  Slot* oldest = &slots[0];
+  for (Slot& s : slots) {
+    if (s.lastMs && s.vid == vid && s.addr == addr) {
+      if (now - s.lastMs < kIntervalMs) return false;
+      s.lastMs = now | 1;
+      return true;
+    }
+    if (!s.lastMs || (oldest->lastMs && (int32_t)(s.lastMs - oldest->lastMs) < 0)) oldest = &s;
+  }
+  *oldest = {vid, addr, now | 1};
+  return true;
+}
+
 void handle_fanet() {
   if (radio_phy == nullptr) {
     return;
@@ -1205,6 +1224,15 @@ void handle_fanet() {
       store_unlock();
 
       if (publish) bd_ws_broadcast(json);
+      // Walking: the pilot after a landing - or after a crash, which the beacon
+      // cannot tell apart, so both go to OGN, once a minute as the OGN
+      // publishing guide asks for aircraft on the ground (section 9). Vehicles
+      // and the other states stay off the feed.
+      if (td.state == state_Walking && ground_aprs_due(td.vid, td.fanet_id) && aprs.connected()) {
+        aprs_lock();
+        aprs.sendGroundTrackingData(&td);
+        aprs_unlock();
+      }
     } else {
       bd_stats_decode_fail();
     }

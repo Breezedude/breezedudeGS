@@ -39,7 +39,8 @@ public:
   void setAirMode(bool _AirMode); //sets the mode (for sending heading and speed only if Air-Module)
   void setGPS(float lat,float lon,float alt,float speed,float heading);
   void sendTrackingData(trackingData *td);
-  void sendGroundTrackingData(time_t timestamp,float lat,float lon,float alt,String devId,uint8_t state,uint8_t adressType,float snr);
+  // FANET ground position (packet type 7), as OGN's own FANET decoder writes it.
+  void sendGroundTrackingData(const trackingData *td);
   void sendNameData(String devId,String name,float snr);
   bool sendWeatherData(weatherData *wData);
   void setClient(Client *_client);
@@ -63,10 +64,10 @@ private:
     String getActTimeString(time_t timestamp);
     String getTimeStringFromTimestamp(time_t timestamp);
     String buildReceiverStatusBody(const String& note);
-    //uint8_t getSenderDetails(bool onlinetracking,aircraft_t aircraftType,uint8_t addressType);
-    uint8_t getSenderDetails(bool OnlineTracking, aircraft_t aircraftType, uint8_t srcProto = TRACK_SRC_FANET);
-    String getOrigin(uint8_t addressType);
-    uint8_t getFANETAircraftType(aircraft_t aircraftType);
+    // The OGN id detail byte, see aprs.cpp.
+    static uint8_t ognIdByte(uint8_t ognAircraftType, uint8_t ognAddrType, bool hidden);
+    static uint8_t ognAircraftType(const trackingData *td);
+    static uint8_t ognAddrType(const String& prefix);
 
     char aprs_server[90] = "";
     char aprsTag[7]= "OGNFNT";
