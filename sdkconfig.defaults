@@ -9,7 +9,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
 # --- application version ---------------------------------------------------
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="0.7.2"
+CONFIG_APP_PROJECT_VER="0.7.3"
 
 # --- build ------------------------------------------------------------------
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
