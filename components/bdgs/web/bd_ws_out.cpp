@@ -289,6 +289,14 @@ void bd_ws_out_add_client(int fd) {
   if (!c) ESP_LOGW(TAG, "no room for websocket client %d", fd);
 }
 
+bool bd_ws_out_has_client(int fd) {
+  if (!s_mutex) return false;
+  lock();
+  const bool known = find_client(fd) != nullptr;
+  unlock();
+  return known;
+}
+
 void bd_ws_out_remove_client(int fd) {
   if (!s_mutex) return;
   lock();

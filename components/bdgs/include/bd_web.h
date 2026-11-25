@@ -40,6 +40,7 @@ BdWsOutStats bd_ws_out_stats();
 
 void bd_ws_out_begin(httpd_handle_t server);
 void bd_ws_out_add_client(int sockfd);
+bool bd_ws_out_has_client(int sockfd);
 void bd_ws_out_remove_client(int sockfd);
 // Sends what is waiting now. HTTP server task only: for a handler that restarts
 // the station and would otherwise never get to send its last words.

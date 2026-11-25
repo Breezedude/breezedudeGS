@@ -64,6 +64,9 @@ CONFIG_BT_ENABLED=n
 
 # --- HTTP server (web UI + websocket) -------------------------------------
 CONFIG_HTTPD_WS_SUPPORT=y
+# ESP-IDF 5.5.x no longer runs the websocket URI handler for the handshake;
+# the station registers its clients in this callback instead (web/bd_http.cpp).
+CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_HTTPD_PURGE_BUF_LEN=32

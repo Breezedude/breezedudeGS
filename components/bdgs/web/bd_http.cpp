@@ -27,20 +27,32 @@ static const char* TAG = "http";
 
 static httpd_handle_t s_server = nullptr;
 // --- websocket endpoint -----------------------------------------------------
+// A websocket client after the handshake: registered for the output queue and
+// greeted. Up to ESP-IDF 5.5.0 the server called the URI handler with the
+// handshake GET; from 5.5.x it no longer does and offers a post-handshake
+// callback instead (CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT). A client the
+// station did not know got no answer at all - the web UI stayed empty.
+static esp_err_t ws_client_opened(httpd_req_t* req) {
+  const int fd = httpd_req_to_sockfd(req);
+  bd_ws_out_add_client(fd);
+  ESP_LOGI(TAG, "websocket client %d connected", fd);
+  JsonDocument hello;
+  hello["hello"]["proto"] = BD_WS_PROTO;
+  hello["hello"]["fw"] = fw_version;
+  String out;
+  serializeJson(hello, out);
+  bd_ws_send(fd, out);
+  return ESP_OK;
+}
+
 static esp_err_t ws_handler(httpd_req_t* req) {
   if (req->method == HTTP_GET) {
-    // Handshake completed by the server itself.
-    int fd = httpd_req_to_sockfd(req);
-    bd_ws_out_add_client(fd);
-    ESP_LOGI(TAG, "websocket client %d connected", fd);
-    JsonDocument hello;
-    hello["hello"]["proto"] = BD_WS_PROTO;
-    hello["hello"]["fw"] = fw_version;
-    String out;
-    serializeJson(hello, out);
-    bd_ws_send(fd, out);
-    return ESP_OK;
+    // Only server versions that still pass the handshake on to the handler.
+    return ws_client_opened(req);
   }
+  // Whatever the server version did with the handshake, a client that talks
+  // to us is one we answer.
+  if (!bd_ws_out_has_client(httpd_req_to_sockfd(req))) ws_client_opened(req);
 
   httpd_ws_frame_t frame = {};
   frame.type = HTTPD_WS_TYPE_TEXT;
@@ -617,6 +629,9 @@ bool bd_web_start() {
   ws_uri.method = HTTP_GET;
   ws_uri.handler = ws_handler;
   ws_uri.is_websocket = true;
+#ifdef CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+  ws_uri.ws_post_handshake_cb = ws_client_opened;
+#endif
   httpd_register_uri_handler(s_server, &ws_uri);
 
   httpd_uri_t update_uri = {};
