@@ -68,9 +68,6 @@ extern String fw_version;
 #ifndef OTA_GS_FAST_SYNCWORD
   #define OTA_GS_FAST_SYNCWORD 0x12
 #endif
-#ifndef OTA_GS_FAST_FREQ_MHZ
-  #define OTA_GS_FAST_FREQ_MHZ 868.2f
-#endif
 
 static constexpr uint8_t FANET_ACK_TYPE = 0x00u;
 static constexpr uint8_t OTA_DEBUG_TYPE = 0x02u;

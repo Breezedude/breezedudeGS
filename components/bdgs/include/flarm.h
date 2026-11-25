@@ -16,8 +16,8 @@
 #define FLARM_PAYLOAD_LEN 26
 
 // Zone 1 (Europe) hops between these two channels within one second.
-#define FLARM_FREQ_LOW_MHZ  868.2f
-#define FLARM_FREQ_HIGH_MHZ 868.4f
+#define FLARM_FREQ_LOW_HZ  868200000UL
+#define FLARM_FREQ_HIGH_HZ 868400000UL
 
 struct FlarmTarget {
   uint32_t addr;         // 24 bit device address

@@ -39,13 +39,16 @@ static const char* TAG = "radio";
 
 #define LORA_SYNCWORD 0xF1  // SX1262 equivalent is handled by RadioLib
 
-// RadioLib only powers the TCXO (DIO3 on the Heltec V3) when a voltage is
-// passed, and the two SX126x classes disagree on their default: SX1262::begin()
-// uses 1.6 V, LLCC68::begin() uses 0 (plain crystal). Every begin/beginFSK call
-// has to use the value matching its part - getting it wrong leaves the
-// oscillator dead and the next command fails with RADIOLIB_ERR_SPI_CMD_FAILED.
-#define RADIO_SX1262_TCXO_V 1.6f
-#define RADIO_LLCC68_TCXO_V 0.0f
+// RadioLib powers the TCXO (DIO3 on the Heltec V3) from the tcxoVoltage member,
+// which since RadioLib 8 defaults to 1.6 V for every SX126x - the LLCC68 boards
+// run on a plain crystal and need it off. A wrong value leaves the oscillator
+// dead and the next command fails with RADIOLIB_ERR_SPI_CMD_FAILED.
+#define RADIO_SX1262_TCXO RadioLibTCXOVoltage_t::Voltage1V6
+#define RADIO_LLCC68_TCXO RadioLibTCXOVoltage_t::VoltageNone
+
+// FANET: 868.2 MHz, LoRa SF7, 250 kHz, CR 4/5, 12 symbols preamble.
+#define FANET_FREQ_HZ 868200000UL
+#define FANET_BW_HZ 250000UL
 
 #ifndef OTA_GS_FAST_BW_KHZ
 #define OTA_GS_FAST_BW_KHZ 500
@@ -67,12 +70,17 @@ static const char* TAG = "radio";
 static EspHal s_hal(BD_PIN_LORA_SCK, BD_PIN_LORA_MISO, BD_PIN_LORA_MOSI, SPI2_HOST,
                     SPI_MASTER_FREQ_8M);
 
-SX1276 radio_sx1276 =
+// Kept by name: bd_radio_packet_rssi() talks to the SX126x through them.
+static Module* s_mod_sx1276 =
     new Module(&s_hal, BD_PIN_LORA_CS, BD_PIN_LORA_DIO1, BD_PIN_LORA_RESET, RADIOLIB_NC);
-LLCC68 radio_llcc68 =
+static Module* s_mod_llcc68 =
     new Module(&s_hal, BD_PIN_LORA_CS, BD_PIN_LORA_DIO1, BD_PIN_LORA_RESET, BD_PIN_LORA_BUSY);
-SX1262 radio_sx1262 =
+static Module* s_mod_sx1262 =
     new Module(&s_hal, BD_PIN_LORA_CS, BD_PIN_LORA_DIO1, BD_PIN_LORA_RESET, BD_PIN_LORA_BUSY);
+
+SX1276 radio_sx1276(s_mod_sx1276);
+LLCC68 radio_llcc68(s_mod_llcc68);
+SX1262 radio_sx1262(s_mod_sx1262);
 
 RadioModuleType lora_module = RADIO_MODULE_NONE;
 PhysicalLayer* radio_phy = nullptr;
@@ -183,16 +191,50 @@ static void irq_pin_restore() {
 }
 
 // --- radio bring-up ---------------------------------------------------------
+// RadioLib 8 takes every setting in integer units (Hz, bit/s). A float in MHz
+// still compiles into these setters - as 868 Hz - so all values live here.
+static ConfigLoRa_t fanet_lora_config() {
+  ConfigLoRa_t c;
+  c.frequency = FANET_FREQ_HZ;
+  c.bandwidth = FANET_BW_HZ;
+  c.spreadingFactor = 7;
+  c.codingRate = 5;
+  c.syncWord = LORA_SYNCWORD;
+  c.power = 10;
+  c.preambleLength = 12;
+  return c;
+}
+
+// Shared GFSK PHY of FLARM and ADS-L, see radio_apply_mode(). The receiver
+// bandwidth is double-sided: 117.3 kHz on the SX126x; on the SX127x 250 kHz,
+// which RadioLib 8 maps to the register RadioLib 7 set for its 125 kHz
+// single-sided value.
+static ConfigFSK_t fsk_config(uint32_t freqHz, bool sx127x) {
+  ConfigFSK_t c;
+  c.frequency = freqHz;
+  c.bitRate = 100000;
+  c.frequencyDeviation = 50000;
+  c.receiverBandwidth = sx127x ? 250000 : 117300;
+  c.power = 10;
+  c.preambleLength = sx127x ? 1 : 8;
+  return c;
+}
+
+static void set_tcxo_defaults() {
+  radio_sx1262.tcxoVoltage = RADIO_SX1262_TCXO;
+  radio_llcc68.tcxoVoltage = RADIO_LLCC68_TCXO;
+}
+
 bool init_lora_radio() {
-  if (radio_sx1276.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12, 0) == RADIOLIB_ERR_NONE) {
+  set_tcxo_defaults();
+  if (radio_sx1276.begin(fanet_lora_config()) == RADIOLIB_ERR_NONE) {
     radio_phy = (PhysicalLayer*)&radio_sx1276;
     lora_module = RADIO_MODULE_SX1276;
     ESP_LOGI(TAG, "radio: LoRa SX1276");
     return true;
   }
 
-  if (radio_llcc68.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12, RADIO_LLCC68_TCXO_V) ==
-      RADIOLIB_ERR_NONE) {
+  if (radio_llcc68.begin(fanet_lora_config()) == RADIOLIB_ERR_NONE) {
     radio_phy = (PhysicalLayer*)&radio_llcc68;
     lora_module = RADIO_MODULE_LLCC68;
     radio_phy->setOutputPower(22);
@@ -201,8 +243,7 @@ bool init_lora_radio() {
     return true;
   }
 
-  if (radio_sx1262.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12, RADIO_SX1262_TCXO_V) ==
-      RADIOLIB_ERR_NONE) {
+  if (radio_sx1262.begin(fanet_lora_config()) == RADIOLIB_ERR_NONE) {
     radio_phy = (PhysicalLayer*)&radio_sx1262;
     lora_module = RADIO_MODULE_SX1262;
     radio_phy->setOutputPower(22);
@@ -222,25 +263,25 @@ void configure_lora_radio(bool fastMode) {
   }
 
   radio_phy->standby();
-  radio_phy->setFrequency(868.2f);
+  radio_phy->setFrequency(FANET_FREQ_HZ);
 
   switch (lora_module) {
     case RADIO_MODULE_SX1276:
-      radio_sx1276.setBandwidth((float)(fastMode ? OTA_GS_FAST_BW_KHZ : 250));
+      radio_sx1276.setBandwidth(fastMode ? RADIOLIB_UNIT_KILO(OTA_GS_FAST_BW_KHZ) : FANET_BW_HZ);
       radio_sx1276.setSpreadingFactor(fastMode ? OTA_GS_FAST_SF : 7);
       radio_sx1276.setCodingRate(fastMode ? OTA_GS_FAST_CR : 5);
       radio_sx1276.setSyncWord(fastMode ? OTA_GS_FAST_SYNCWORD : LORA_SYNCWORD);
       radio_sx1276.setPreambleLength(fastMode ? OTA_GS_FAST_PREAMBLE : 12);
       break;
     case RADIO_MODULE_LLCC68:
-      radio_llcc68.setBandwidth((float)(fastMode ? OTA_GS_FAST_BW_KHZ : 250));
+      radio_llcc68.setBandwidth(fastMode ? RADIOLIB_UNIT_KILO(OTA_GS_FAST_BW_KHZ) : FANET_BW_HZ);
       radio_llcc68.setSpreadingFactor(fastMode ? OTA_GS_FAST_SF : 7);
       radio_llcc68.setCodingRate(fastMode ? OTA_GS_FAST_CR : 5);
       radio_llcc68.setSyncWord(fastMode ? OTA_GS_FAST_SYNCWORD : LORA_SYNCWORD);
       radio_llcc68.setPreambleLength(fastMode ? OTA_GS_FAST_PREAMBLE : 12);
       break;
     case RADIO_MODULE_SX1262:
-      radio_sx1262.setBandwidth((float)(fastMode ? OTA_GS_FAST_BW_KHZ : 250));
+      radio_sx1262.setBandwidth(fastMode ? RADIOLIB_UNIT_KILO(OTA_GS_FAST_BW_KHZ) : FANET_BW_HZ);
       radio_sx1262.setSpreadingFactor(fastMode ? OTA_GS_FAST_SF : 7);
       radio_sx1262.setCodingRate(fastMode ? OTA_GS_FAST_CR : 5);
       radio_sx1262.setSyncWord(fastMode ? OTA_GS_FAST_SYNCWORD : LORA_SYNCWORD);
@@ -391,7 +432,7 @@ static bool radio_apply_mode(RadioMode mode) {
   if (radio_phy == nullptr) return false;
 
   const bool highChannel = (mode == RADIO_MODE_FLARM_HIGH || mode == RADIO_MODE_ADSL_HIGH);
-  const float freq = highChannel ? FLARM_FREQ_HIGH_MHZ : FLARM_FREQ_LOW_MHZ;
+  const uint32_t freq = highChannel ? FLARM_FREQ_HIGH_HZ : FLARM_FREQ_LOW_HZ;
 
   // Staying inside FSK only needs a retune plus, when the protocol changes, a
   // new sync word - far cheaper than a full modem reconfiguration.
@@ -413,13 +454,13 @@ static bool radio_apply_mode(RadioMode mode) {
     int16_t st = RADIOLIB_ERR_UNKNOWN;
     switch (lora_module) {
       case RADIO_MODULE_SX1276:
-        st = radio_sx1276.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12, 0);
+        st = radio_sx1276.begin(fanet_lora_config());
         break;
       case RADIO_MODULE_LLCC68:
-        st = radio_llcc68.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12, RADIO_LLCC68_TCXO_V);
+        st = radio_llcc68.begin(fanet_lora_config());
         break;
       case RADIO_MODULE_SX1262:
-        st = radio_sx1262.begin(868.2f, 250.0f, 7, 5, LORA_SYNCWORD, 10, 12, RADIO_SX1262_TCXO_V);
+        st = radio_sx1262.begin(fanet_lora_config());
         break;
       default:
         return false;
@@ -445,13 +486,13 @@ static bool radio_apply_mode(RadioMode mode) {
 
   switch (lora_module) {
     case RADIO_MODULE_SX1276:
-      state = radio_sx1276.beginFSK(freq, 100.0f, 50.0f, 125.0f, 10, 1, false);
+      state = radio_sx1276.beginFSK(fsk_config(freq, true));
       break;
     case RADIO_MODULE_LLCC68:
-      state = radio_llcc68.beginFSK(freq, 100.0f, 50.0f, 117.3f, 10, 8, RADIO_LLCC68_TCXO_V, false);
+      state = radio_llcc68.beginFSK(fsk_config(freq, false));
       break;
     case RADIO_MODULE_SX1262:
-      state = radio_sx1262.beginFSK(freq, 100.0f, 50.0f, 117.3f, 10, 8, RADIO_SX1262_TCXO_V, false);
+      state = radio_sx1262.beginFSK(fsk_config(freq, false));
       break;
     default:
       return false;
@@ -1027,6 +1068,24 @@ static bool ground_aprs_due(uint8_t vid, uint16_t addr) {
   return true;
 }
 
+// RSSI of the last LoRa packet. RadioLib 8 reports RssiPkt on the SX126x, the
+// power over the whole packet; up to 7.x it was SignalRssiPkt, the signal after
+// despreading, which reads lower for weak packets (down to -127.5 dBm). The
+// server picks the ground station that serves an OTA update by this value and
+// gates updates below -115 dBm, and stations on both versions run side by side,
+// so it stays the value it was. The SX127x reports the despread signal anyway.
+static float bd_radio_packet_rssi() {
+  Module* mod = lora_module == RADIO_MODULE_SX1262 ? s_mod_sx1262
+              : lora_module == RADIO_MODULE_LLCC68 ? s_mod_llcc68 : nullptr;
+  if (mod) {
+    uint8_t status[3] = {0, 0, 0};  // RssiPkt, SnrPkt, SignalRssiPkt
+    if (mod->SPIreadStream(RADIOLIB_SX126X_CMD_GET_PACKET_STATUS, status, 3) == RADIOLIB_ERR_NONE) {
+      return -0.5f * (float)status[2];
+    }
+  }
+  return radio_phy->getRSSI();
+}
+
 void handle_fanet() {
   if (radio_phy == nullptr) {
     return;
@@ -1058,7 +1117,7 @@ void handle_fanet() {
 
   if (state == RADIOLIB_ERR_NONE) {
     fanet_rx_count++;
-    bd_stats_rx(BD_STAT_FANET, radio_phy->getSNR(), radio_phy->getRSSI());
+    bd_stats_rx(BD_STAT_FANET, radio_phy->getSNR(), bd_radio_packet_rssi());
   } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
     ESP_LOGD(TAG, "FANET CRC error");
     bd_stats_crc_error();
@@ -1069,10 +1128,10 @@ void handle_fanet() {
   }
 
   bd_board_led_blink(20);
-  bd_repeat_note(byteArr, (size_t)numBytes, radio_phy->getSNR(), radio_phy->getRSSI());
+  bd_repeat_note(byteArr, (size_t)numBytes, radio_phy->getSNR(), bd_radio_packet_rssi());
 
   fanet_header* header = (fanet_header*)byteArr;
-  bd_diag_note_packet(header->vendor, header->address, header->type, radio_phy->getRSSI(), radio_phy->getSNR());
+  bd_diag_note_packet(header->vendor, header->address, header->type, bd_radio_packet_rssi(), radio_phy->getSNR());
   // The night plan learns the stations' rhythms all day, from what is received
   // anyway - so it is ready at sunset.
   const uint32_t sender_id = ((uint32_t)header->vendor << 16) | header->address;
@@ -1084,7 +1143,7 @@ void handle_fanet() {
   if (header->type == FANET_PCK_TYPE_WEATHER) {
     weatherData wd;
     if (unpack_weatherdata(byteArr, (size_t)numBytes, &wd, radio_phy->getSNR(),
-                           radio_phy->getRSSI())) {
+                           bd_radio_packet_rssi())) {
       store_lock();
       int i = storeWeatherData(wd);
       bool publish = (millis() - weatherStore[i].last_send) > 3000;  // filter duplicates
@@ -1160,7 +1219,7 @@ void handle_fanet() {
 
   else if (header->type == FANET_PCK_TYPE_HW_INFO) {
     hwInfoData hi;
-    if (unpack_hwinfo_t0a(byteArr, numBytes, &hi, radio_phy->getRSSI(), radio_phy->getSNR())) {
+    if (unpack_hwinfo_t0a(byteArr, numBytes, &hi, bd_radio_packet_rssi(), radio_phy->getSNR())) {
       // First, the sensor only listens for 300 ms: everything below may take longer.
       ota_gs_hold(hi);
       store_lock();
@@ -1188,7 +1247,7 @@ void handle_fanet() {
 
   else if (header->type == FANET_PCK_TYPE_TRACKING) {
     trackingData td;
-    if (unpack_trackingdata(byteArr, &td, radio_phy->getRSSI(), radio_phy->getSNR())) {
+    if (unpack_trackingdata(byteArr, &td, bd_radio_packet_rssi(), radio_phy->getSNR())) {
       store_lock();
       int i = storeTrackingData(td);  // sort and get position
       bool publish = (millis() - trackingStore[i].last_send) > 800;
@@ -1214,7 +1273,7 @@ void handle_fanet() {
 
   else if (header->type == FANET_PCK_TYPE_GROUND_TRACKING) {
     trackingData td;
-    if (unpack_ground_trackingdata(byteArr, &td, radio_phy->getRSSI(), radio_phy->getSNR())) {
+    if (unpack_ground_trackingdata(byteArr, &td, bd_radio_packet_rssi(), radio_phy->getSNR())) {
       store_lock();
       int i = storeTrackingData(td);
       bool publish = (millis() - trackingStore[i].last_send) > 800;
