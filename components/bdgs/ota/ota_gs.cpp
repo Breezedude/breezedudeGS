@@ -102,6 +102,26 @@ static constexpr uint32_t OTA_GS_START_TOTAL_MS = 12000UL;
 static constexpr uint16_t OTA_GS_POST_ACK_DELAY_MS = 35u;
 static constexpr uint16_t OTA_GS_RETRY_BACKOFF_MS = 80u;
 static constexpr uint8_t OTA_GS_CHUNK_MAX_ATTEMPTS = 15u;
+// FINISH: sent this often at most, each time waiting this long for the answer.
+static constexpr uint8_t OTA_GS_FINISH_SENDS = 3u;
+static constexpr uint32_t OTA_GS_FINISH_WAIT_MS = 5000UL;
+// Resume: set in the START packet's chunk_size field (not part of the signed
+// data) to tell the sensor that this station continues a transfer at the
+// sequence number the sensor answers with. A sensor that was interrupted while
+// receiving the same image then keeps what it has instead of erasing its slot.
+// Sensor firmware from 1.2.3 on knows the flag; older ones are not sent it.
+static constexpr uint16_t OTA_START_FLAG_RESUME = 0x8000u;
+static constexpr uint16_t OTA_RESUME_MIN_VERSION_BCD = 0x123u;
+// Hold: sensor firmware from 1.2.3 on listens for 300 ms after every HW info
+// packet that is not an OTA announcement. A FANET ACK in that window makes it
+// send the announcement at once, so an update does not have to wait for the
+// sensor's hourly one. Sent without asking the backend - there is no time for
+// that - and only when the image is already in the flash store and the backend
+// named this station as the one to do it (see ota_gs_hold()).
+static constexpr uint16_t OTA_HOLD_MIN_VERSION_BCD = 0x123u;
+// Not again for the same sensor within this time: repeated copies of a packet
+// come in seconds later, when the sensor no longer listens.
+static constexpr uint32_t OTA_HOLD_REPEAT_MS = 60000UL;
 
 // Per-chunk transfer stats are reported as two parallel 4-bit-per-chunk
 // nibble arrays (2 chunks packed per byte, high nibble = first chunk of the
@@ -194,6 +214,7 @@ struct OtaManifest {
   uint8_t signatureRaw[64] = {0};
   uint32_t expires = 0;
   uint16_t chunkSize = OTA_MAX_CHUNK;
+  bool hold = false;  // /preload only: this station may ask the sensor for its announcement
 };
 
 // Timing and progress of one OTA attempt, collected while it runs and sent to
@@ -269,6 +290,8 @@ struct OtaHistory {
   uint32_t preloadCheckedMs;  // millis() of the last backend answer, 0 = never
   uint32_t preloadAt;         // Unix time of that answer
   char preloadDetail[32];
+  bool holdAllowed;           // backend: this station asks the sensor, see ota_gs_hold()
+  uint32_t lastHoldMs;        // millis() of the last hold sent, 0 = none
 };
 
 static OtaHistory s_history[OTA_HISTORY_DEVICES];
@@ -653,6 +676,9 @@ static bool sendStart(const OtaAnnouncement& ann, const OtaManifest& manifest) {
   pkt.nonce = ann.nonce;
   pkt.target_version_bcd = manifest.targetVersionBcd;
   pkt.chunk_size = manifest.chunkSize;
+  if(ann.versionBcd >= OTA_RESUME_MIN_VERSION_BCD) {
+    pkt.chunk_size |= OTA_START_FLAG_RESUME;
+  }
   pkt.image_size = manifest.imageSize;
   pkt.image_crc32 = manifest.imageCrc32;
   pkt.expires = manifest.expires;
@@ -838,7 +864,9 @@ static bool streamFirmware(const OtaAnnouncement& ann, const OtaManifest& manife
   const uint32_t transferStartMs = millis();
   uint8_t chunk[OTA_MAX_CHUNK] = {0};
   uint16_t seq = startSeq;
-  uint32_t sent = (uint32_t)startSeq * manifest.chunkSize;
+  // A sensor that already holds every chunk (only FINISH was lost) answers
+  // with the chunk count; the last chunk may be a short one.
+  uint32_t sent = std::min<uint32_t>((uint32_t)startSeq * manifest.chunkSize, manifest.imageSize);
   uint8_t lastProgress = 0;
 
   while(sent < manifest.imageSize) {
@@ -1398,6 +1426,7 @@ static bool queryPreload(uint8_t vendor, uint16_t address, uint16_t versionBcd, 
   manifest.targetVersionBcd = doc["targetVersionBcd"] | (uint16_t)0u;
   manifest.imageSize = doc["imageSize"] | 0u;
   manifest.imageSha256 = (const char*)(doc["imageSha256"] | "");
+  manifest.hold = doc["hold"] | false;
   if(manifest.firmwareUrl.isEmpty() || manifest.imageSize == 0u ||
      !parseHexBytes(manifest.imageSha256, manifest.imageSha256Raw, sizeof(manifest.imageSha256Raw))) {
     error = "manifest incomplete";
@@ -1405,6 +1434,53 @@ static bool queryPreload(uint8_t vendor, uint16_t address, uint16_t versionBcd, 
     return false;
   }
   return true;
+}
+
+// Called for every HW info packet as soon as it is decoded, before anything
+// that takes time: the sensor listens for only 300 ms. Sends the FANET ACK
+// that makes it announce itself, when an update for it is ready here. The
+// announcement that follows runs through ota_gs_try_update() like any other.
+bool ota_gs_hold(const hwInfoData& info) {
+  if(s_busy || otaUploadInProgress || WiFi.status() != WL_CONNECTED || info.vid == 0 ||
+     !info.hasSubtypeBuildDate || info.rawLen == 0) {
+    return false;
+  }
+  const uint8_t type = info.rawAfterBuildDate[0];
+  if(type < 1 || type > 4 || type == OTA_DEBUG_TYPE) {
+    return false;  // after its announcement the sensor waits for the offer, not for this
+  }
+
+  bool send = false;
+  portENTER_CRITICAL(&s_history_lock);
+  for(OtaHistory& h : s_history) {
+    if(!h.used || h.vendor != info.vid || h.address != info.fanet_id) {
+      continue;
+    }
+    send = h.preloadState == PRELOAD_READY && h.holdAllowed &&
+           h.versionBcd >= OTA_HOLD_MIN_VERSION_BCD && h.preloadTargetBcd > h.versionBcd &&
+           (h.lastHoldMs == 0 || millis() - h.lastHoldMs >= OTA_HOLD_REPEAT_MS);
+    if(send) {
+      h.lastHoldMs = millis() | 1u;
+    }
+    break;
+  }
+  portEXIT_CRITICAL(&s_history_lock);
+  if(!send) {
+    return false;
+  }
+
+  OtaAnnouncement ann;
+  ann.vendor = info.vid;
+  ann.address = info.fanet_id;
+  const bool sent = sendFanetAck(ann);
+  receivedFlag = false;
+  radio_phy->startReceive();
+  if(sent) {
+    char deviceId[8];
+    snprintf(deviceId, sizeof(deviceId), "%02X%04X", info.vid, info.fanet_id);
+    ota_status(String("OTA: update ready for ") + deviceId + ", asked for its announcement");
+  }
+  return sent;
 }
 
 void ota_gs_preload_tick() {
@@ -1468,6 +1544,7 @@ void ota_gs_preload_tick() {
   portENTER_CRITICAL(&s_history_lock);
   OtaHistory* h = historySlotLocked(vendor, address);
   h->preloadState = state;
+  h->holdAllowed = state == PRELOAD_READY && manifest.hold;
   h->preloadTargetBcd = manifest.available ? manifest.targetVersionBcd : 0;
   h->preloadCheckedMs = millis() | 1u;
   h->preloadAt = (uint32_t)time(nullptr);
@@ -1646,10 +1723,16 @@ void ota_gs_try_update(const hwInfoData& info) {
 
   ota_status("OTA: handshake successful, transferring firmware");
   const uint32_t transferStartMs = millis();
-  // start_seq is currently always 0 (no resume support yet); kept explicit
-  // so the stats payload format already accounts for a future resumed
-  // transfer continuing from the last successfully acked chunk.
-  const uint16_t startSeq = 0u;
+  // The sensor's answer to START names the chunk it expects next: 0 for a
+  // fresh session, more when it continues an interrupted transfer of this
+  // image (see OTA_START_FLAG_RESUME). Anything beyond the image is not an
+  // answer this station can use; the transfer then fails on the first chunk
+  // and the next session starts clean.
+  uint16_t startSeq = 0u;
+  if(ann.versionBcd >= OTA_RESUME_MIN_VERSION_BCD && ackInfo.nextSeq > 0u && ackInfo.nextSeq <= totalChunks) {
+    startSeq = ackInfo.nextSeq;
+    ota_status(String("OTA: sensor resumes at chunk ") + startSeq + " of " + totalChunks);
+  }
   std::vector<uint8_t> chunkRetries;
   std::vector<float> chunkSnr;
   std::vector<uint8_t> chunkAckResends;
@@ -1668,7 +1751,7 @@ void ota_gs_try_update(const hwInfoData& info) {
   postOtaStats(ann, manifest, chunkRetries, chunkSnr, chunkAckResends, chunkDeviceSnr, chunkDeviceRssi, chunkProactiveAckResends, startSeq, transferOk);
   ota_progress_end(transferOk);
   // The last stats entry of a failed transfer is the chunk that was not accepted.
-  attempt.chunksSent = chunkRetries.size() - ((!transferOk && !chunkRetries.empty()) ? 1u : 0u);
+  attempt.chunksSent = startSeq + chunkRetries.size() - ((!transferOk && !chunkRetries.empty()) ? 1u : 0u);
   if(!transferOk) {
     ota_status("OTA: firmware transfer failed");
     sendAbort(ann, OTA_ERR_TIMEOUT);
@@ -1688,13 +1771,42 @@ void ota_gs_try_update(const hwInfoData& info) {
     return;
   }
 
+  // The sensor answers FINISH after it has checked the image, a second or two.
+  // An ACK that still says RX was sent before FINISH reached it - a proactive
+  // resend while it waits, or FINISH got lost - and is no answer: FINISH goes
+  // out again. Before, the first such ACK ended the attempt as "rejected", and
+  // the sensor sat on a complete image until its session timed out.
   OtaAckInfo finishAck;
+  bool finishAnswered = false;
+  for(uint8_t send = 0; send < OTA_GS_FINISH_SENDS && !finishAnswered; ++send) {
+    if(send > 0u) {
+      ota_status("OTA: no answer to finish, sending it again");
+      if(!sendFinish(ann, manifest)) {
+        break;
+      }
+    }
+    const uint32_t until = millis() + OTA_GS_FINISH_WAIT_MS;
+    while(!finishAnswered && (int32_t)(until - millis()) > 0) {
+      if(!waitForAck(ann.nonce, finishAck, until - millis())) {
+        break;
+      }
+      finishAnswered = finishAck.status != OTA_STATE_RX;
+    }
+  }
   const char* finishReason;
   String finishDetail;
-  if(waitForAck(ann.nonce, finishAck, 5000) && finishAck.status == OTA_STATE_READY) {
+  if(finishAnswered && finishAck.status == OTA_STATE_READY) {
     ota_status("OTA: finished successfully");
     finishReason = "success";
-  } else if(finishAck.status != 0) {
+    // No more holds for this sensor until the backend was asked again: its
+    // next packets come from the new firmware.
+    portENTER_CRITICAL(&s_history_lock);
+    OtaHistory* done = historySlotLocked(ann.vendor, ann.address);
+    done->preloadState = PRELOAD_NONE;
+    done->holdAllowed = false;
+    done->preloadCheckedMs = 0;
+    portEXIT_CRITICAL(&s_history_lock);
+  } else if(finishAnswered) {
     ota_status(String("OTA: finish rejected by device, status=0x") + String(finishAck.status, HEX));
     finishReason = "finish_rejected";
     finishDetail = String("status=0x") + String(finishAck.status, HEX);
@@ -1711,6 +1823,7 @@ void ota_gs_try_update(const hwInfoData& info) {
 #else
 
 void ota_gs_begin() {}
+bool ota_gs_hold(const hwInfoData& info) { (void)info; return false; }
 void ota_gs_try_update(const hwInfoData& info) { (void)info; }
 void ota_gs_note_hwinfo(const hwInfoData& info) { (void)info; }
 void ota_gs_preload_tick() {}

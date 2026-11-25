@@ -1161,6 +1161,8 @@ void handle_fanet() {
   else if (header->type == FANET_PCK_TYPE_HW_INFO) {
     hwInfoData hi;
     if (unpack_hwinfo_t0a(byteArr, numBytes, &hi, radio_phy->getRSSI(), radio_phy->getSNR())) {
+      // First, the sensor only listens for 300 ms: everything below may take longer.
+      ota_gs_hold(hi);
       store_lock();
       int hi_idx = storeHwInfoData(hi);
       bool publish = (millis() - hwInfoStore[hi_idx].last_send) > 3000;

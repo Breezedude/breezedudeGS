@@ -11,6 +11,9 @@ class BdJsonOut;
 
 void ota_gs_begin();
 void ota_gs_try_update(const hwInfoData& info);
+// Right after a HW info packet was decoded: asks a sensor for its OTA
+// announcement when an update for it is ready here. True if it did.
+bool ota_gs_hold(const hwInfoData& info);
 
 // Every HW info packet of a sensor: learns when its next OTA announcement is
 // due (type 2 comes hourly, the first 10 minutes after boot) and marks the
