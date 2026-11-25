@@ -18,7 +18,7 @@ Breezedude sensors. What changed is the foundation:
 
 ## Build
 
-ESP-IDF 5.5 must be installed:
+ESP-IDF 5.5 must be installed; releases are built with v5.5.6 and RadioLib 8.0:
 
 ```bash
 . $IDF_PATH/export.sh            # export.ps1 in PowerShell
